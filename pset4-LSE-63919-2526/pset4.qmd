@@ -1,0 +1,492 @@
+---
+title: "Problem Set 4: Regression Discontinuity Designs"
+subtitle: "MY457 | WT 2026 | Week 9"
+number-sections: true
+format:
+  pdf:
+    toc: false
+    include-in-header:
+      text: |
+        \setkomafont{disposition}{\normalfont\bfseries}
+        \setkomafont{section}{\normalfont\Large\bfseries}
+        \setkomafont{subsection}{\normalfont\normalsize}
+---
+
+```{r setup, include = FALSE}
+# this chunk contains code that sets global options for the entire .qmd.
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, linewidth = 60, echo = T)
+
+# you can include your libraries here:
+library(tidyverse)
+library(here)
+library(knitr)
+library(estimatr)
+library(broom)
+library(modelsummary)
+library(haven)
+library(ggdag)
+library(rdrobust)
+library(rddensity)
+library(RDHonest)
+```
+
+Add your answers to this .qmd file by replacing the dedicated placeholder text. When you are finished, render the .qmd file as a .pdf and make sure you push your work to GitHub.
+
+
+# Concepts
+
+## Consider a data generating process with $i \in [1, ..., N]$ units. Treatment $D_i$ is assigned based on values of a variable $X_i$, such that $D = \mathbf{1}\{X_i > c\}$, where $c$ is a cutpoint. What is the precise name of the research design we could use here? Briefly explain your answer.
+
+Sharp Regression Discontinuity Design: Uses a forcing variable to determine levels of treatment at both sides of the cutpoint
+
+
+## Below is an incomplete table of potential outcomes for the data generating process described above. Fill in the missing values and **bold** the values you fill in. Assume a cutpoint of $c = 1$.
+
+|$i$|$X_i$|$D_i$  |$Y_{0i}$| $Y_{1i}$|$Y_i$|$\tau_i$|
+|---|-----|-------|--------|---------|-----|------|
+| 1 | 0.5 | **0** | 10     | 15      |  **10**   |   **5**   |
+| 2 | 1.5 | **1** | 20     | 30      |   **30**  |   **10**   |
+| 3 | 0.8 | **0** | 15     | 20      |   **15**  |   **5**   |
+| 4 | 1.2 | **1** | 25     | 35      |   **35**  |   **10**   |
+
+
+## Explain the difference between the local randomisation perspective and the continuity perspective in regression discontinuity designs.
+
+With the local randomization perspective, we assume that, within a small window around the cutpoint $c$, all units are as-if random and assigned a value of $X_i$ (and therefore $D_i$). However, this is a strong assumption.
+
+Instead, the regression discontinuity design assumes there is no difference between potential outcomes at the cutpoint $c$. Instead, we say that potential outcomes close to the cutpoint are approximately the same as potential outcomes exactly at the cutpoint. We then estimate missing outcomes by extrapolating $X_i = c$.
+
+
+## Explain the two equations below. How do they correspond to the two perspectives of RDD?
+
+1. 
+$$
+  (Y_{0i}, Y_{1i}) \perp\!\!\!\perp D_i \quad \text{for all } i \text{ where} |X_i - c| \leq h
+$$
+
+
+2. 
+$$
+\begin{aligned}
+\lim_{\epsilon \uparrow 0} E[Y_{0i} \mid X_i = c + \epsilon] &= E[Y_{0i} \mid X_i = c] \\
+\lim_{\epsilon \downarrow 0} E[Y_{1i} \mid X_i = c + \epsilon] &= E[Y_{1i} \mid X_i = c]
+\end{aligned}
+$$
+
+
+The first equation represents the assumption for the local randomization perspective. It says that, for all $i$ in a narrow bandwith $h$ around the cutpoint $c$, treatment assignment $D_i$ is independent of potential outcomes.
+
+The second set of equations is the foundation for the continuity perspective, which assumes that the conditional expectation of potential outcomes is continuous through the cutpoint. Units just below the cutoff should have the same expected outcome as units just above it.
+
+
+## Which estimand can we identify with a sharp RDD? Write down the estimand in terms of potential outcomes and explain in words what it means.
+
+We can estimate the Local Average Treatment Effect (LATE) with a sharp RDD:
+
+$\tau = E[Y_{0i} - Y_{1i} | X_i = c]$
+
+This represents the expected difference in potential outcomes for units whose running variable is exactly equal to $c$.
+
+
+## Which estimands can we identify with a fuzzy RDD? Write down the estimands in terms of potential outcomes and explain in words what it means.
+
+We can estimate both the Local ITT of encouragement at the threshold and the LATE for compilers at the threshold.
+
+$LITT: \tau = E[Y_{0i} - Y_{1i} | X_i = c]$
+
+$LATE: \tau = E[Y_{0i} - Y_{1i} |$ unit $i$ is a compiler and $X_i = c]$
+
+The LITT captures the jump in observed outcomes at the cutpoint, combining both the effect of treatment and the change in the probability of taking it up. The LATE for the fuzzy RDD shows the average treatment effect for those units at $X_i =c$ whose treatment status is switched by crossing the threshold. 
+
+
+## Beyond SUTVA, Which assumptions do we need to make to identify the LATE in a fuzzy RDD?
+
+*Delete this line and replace it with your answer.*
+
+
+## Suppose a city summons drivers caught exceeding 50 mph at automated speed cameras to appear in traffic court. However, not all summoned drivers actually appear — some ignore the summons, and some drivers below the threshold are summoned for other reasons. A researcher wants to know the causal effect of a court appearance on subsequent traffic compliance, measured as the number of traffic violations by that driver in the following two years. Using data from drivers with speeds within a narrow bandwidth around the cutoff, the researcher estimates two regressions with the recentred running variable $\tilde{X}_i = X_i - c$ (where $c = 50$) and an indicator $Z_i = \mathbf{1}(X_i > 50)$. $Y_i = \alpha + \tau Z_i + \beta \tilde{X}_i + \epsilon_i$. The estimated coefficient $\tau$ is -0.4. They also estimate a second regression with the same recentred variable and indicator, but with an indicator for whether the driver appeared in court as the dependent variable, $D_i$. The estimated coefficient on $Z_i$ in this second regression is 0.6. What is the LITT and what is the LATE? What do the findings tell us about the research question?
+
+The LITT is -0.4 and the LATE is $\frac{0.4}{0.6} = \frac{2}{3}$. The findings tell us that that court appearances have a meaningful deterrent effect on subsequent traffic violations among compliers near the threshold. The LATE is larger in magnitude than the LITT, which makes sense, as the LITT is diluted by non-compliers (those summoned who don't appear, and those who appear for other reasons), while the LATE isolates the effect for those whose attendance was actually driven by the summons.
+
+
+## Evaluate the plausibility of the above design.
+
+**Strengths:**
+
+The speed camera threshold provides a plausible source of quasi-random variation. Drivers marginally above and below 50 mph are likely very similar in unobserved characteristics, making the continuity assumption credible near the cutoff.
+
+The fuzzy design is appropriate here — it would be implausible to treat all summoned drivers as compliant, so the IV approach via the first stage correctly accounts for imperfect take-up.
+
+**Threats to validity:**
+
+Manipulation of the main variable is a concern. Drivers may be aware of the 50 mph threshold and attempt to stay just below it, which would cause a discontinuity at the cutpoint.
+
+Monotonicity may be violated if some drivers below the threshold are summoned for other reasons and are less likely to appear than they would be if summoned via the speed camera. This would introduce defiers and invalidate the LATE interpretation.
+
+The exclusion restriction requires that crossing 50 mph affects subsequent violations only through the court appearance. This may fail if, for example, drivers caught at high speed also receive points on their licence or higher fines automatically at the threshold, providing an additional deterrence channel independent of the court appearance itself.
+
+Outcome measurement relies on recorded violations, which captures detected rather than actual violations. If a court appearance makes drivers more cautious in ways that don't reduce actual speeding but reduce detection (e.g. avoiding camera locations), the estimate would overstate the true compliance effect.
+
+
+# Simulations
+
+## Explain the simulation code below. 
+
+```{r, echo = TRUE, include = TRUE}
+n <- 1000
+
+set.seed(123)
+X <- rnorm(n, mean = 0, sd = 15)
+c <- 0
+
+Y0 <- 100 + 0.45 * X - 0.15 * (X^2) + 0.001 * (X^3) + rnorm(n, mean = 0, sd = 25)
+Y1 <- 175 + 0.25 * X + 0.15 * (X^2) - 0.001 * (X^3) + rnorm(n, mean = 0, sd = 25)
+
+D <- ifelse(X > c, 1, 0)
+Y <- ifelse(D == 1, Y1, Y0)
+
+dat <- tibble(
+    X,
+    D,
+    Y,
+    Y0,
+    Y1
+)
+```
+
+
+The code generates a dataset of $n=1000$ to simulate a sharp RDD. $X$ is a normally distributed variable, and $c=0$ is the cutpoint. As evidenced by the functions for $Y_0$ and $Y_1$, the treatment effect varies on either side of the cutpoint. The data are stored in a table that manifests both potnetial outcomes, even though only one is ever visible.
+
+
+## Calculate the true ATE and the true LATE. How do these two quantities compare? 
+
+$True ATE = E[\tau] = 75−(0.20*E[X])+(0.30*E[X^2])−(0.002⋅E[X^3])$
+$= 75+0+(0.30×225)+0=75+67.5=142.5$
+
+$True LATE = 75−0.20(0)+0.30(0)^2−0.002(0)^3=75$
+
+
+## In a clear, well formatted, and compelling figure, visualise *both* potential outcomes and how they relate to the cutpoint.
+
+```{r}
+x_seq <- seq(-40, 40, by = 0.1)
+
+po_curves <- tibble(
+  x  = x_seq,
+  Y0 = 100 + 0.45*x - 0.15*x^2 + 0.001*x^3,
+  Y1 = 175 + 0.25*x + 0.15*x^2 - 0.001*x^3
+) |>
+  pivot_longer(c(Y0, Y1), names_to = "Outcome", values_to = "value")
+
+ggplot(po_curves, aes(x = x, y = value, colour = Outcome)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
+  annotate("segment",
+           x = 1.5, xend = 1.5,
+           y = 100, yend = 175,
+           arrow = arrow(ends = "both", length = unit(0.2, "cm")),
+           colour = "grey40") +
+  annotate("text", x = 5, y = 137.5, label = "LATE = 75",
+           size = 3.5, colour = "grey30") +
+  annotate("text", x = 2.5, y = 50, label = "c = 0",
+           size = 3.5, colour = "grey50") +
+  scale_colour_manual(
+    values = c("Y0" = "#3B8BD4", "Y1" = "#D85A30"),
+    labels = c("Y0" = expression(Y[0]*" (control)"),
+               "Y1" = expression(Y[1]*" (treatment)"))
+  ) +
+  labs(
+    title    = "Both potential outcomes across the running variable",
+    x        = "Running variable (X)",
+    y        = "Potential outcome",
+    colour   = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom")
+
+```
+
+
+## In a clear, well formatted, and compelling figure, visualise only the observed `Y`.  
+
+```{r}
+fit_lines <- tibble(x = x_seq) |>
+  mutate(
+    Y0_fit = 100 + 0.45*x - 0.15*x^2 + 0.001*x^3,
+    Y1_fit = 175 + 0.25*x + 0.15*x^2 - 0.001*x^3,
+    D      = ifelse(x >= 0, 1, 0)
+  )
+
+ggplot(dat, aes(x = X, y = Y, colour = factor(D))) +
+  geom_point(alpha = 0.25, size = 0.9) +
+  geom_line(
+    data = fit_lines |> filter(x <= 0),
+    aes(x = x, y = Y0_fit),
+    colour = "#3B8BD4", linewidth = 1.2, inherit.aes = FALSE
+  ) +
+  geom_line(
+    data = fit_lines |> filter(x >= 0),
+    aes(x = x, y = Y1_fit),
+    colour = "#D85A30", linewidth = 1.2, inherit.aes = FALSE
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
+  annotate("segment",
+           x = -1.5, xend = -1.5,
+           y = 100, yend = 175,
+           arrow = arrow(ends = "both", length = unit(0.2, "cm")),
+           colour = "grey40") +
+  annotate("text", x = -9, y = 137.5, label = "Jump ≈ 75",
+           size = 3.5, colour = "grey30") +
+  annotate("text", x = 3, y = min(dat$Y) + 10, label = "c = 0",
+           size = 3.5, colour = "grey50") +
+  scale_colour_manual(
+    values = c("0" = "#3B8BD4", "1" = "#D85A30"),
+    labels = c("0" = "Control (D = 0)", "1" = "Treated (D = 1)")
+  ) +
+  labs(
+    title    = "Observed outcome Y across the running variable",
+    x        = "Running variable (X)",
+    y        = "Observed outcome (Y)",
+    colour   = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom")
+
+```
+
+
+## Use a global (do not focus on a narrow window) linear regression with common slopes to estimate the LATE. What do you find? How does this estimator perform? 
+
+```{r}
+fit_linear <- lm(Y ~ D + X, data = dat)
+summary(fit_linear)
+
+# Extract the LATE estimate
+late_linear <- coef(fit_linear)["D"]
+cat("Global linear LATE estimate:", round(late_linear, 3), "\n")
+cat("True LATE:                    75\n")
+cat("Bias:                        ", round(late_linear - 75, 3), "\n")
+
+```
+
+Because the intercept values is 116.05, we can see that there is some distortion from the misspecified slope. 28.97 is the estimated LATE; the true LATE is 75. Therefore, the bias is −46, meaning the estimator is recovering less than 40% of the true effect.
+
+Intuitively, the linear model sees that Y rises steeply as X increases on the treated side. It attributes much of that rise to the slope β rather than to treatment. Having "explained away" the upward trend with a steep common slope, there is little jump left to attribute to D, so τ^ is pulled sharply downward.
+
+## Use a global (do not focus on a narrow window) polynomial regression with varying slopes to estimate the LATE. Pick an adequate polynomial order based on your knowledge about the DGP. What do you find? How does the estimator perform? How might you expect this estimator to perform outside of a simulated setting? 
+
+```{r}
+fit_poly <- lm(Y ~ D * (X + I(X^2) + I(X^3)), data = dat)
+summary(fit_poly)
+
+late_poly <- coef(fit_poly)["D"]
+cat("Global cubic LATE estimate:", round(late_poly, 3), "\n")
+cat("True LATE:                   75\n")
+cat("Bias:                       ", round(late_poly - 75, 3), "\n")
+
+```
+
+This model fits very well overall. R² = 0.931 means it explains 93% of variance in Y, and the residual standard error of 24.45 is close to the true noise level (SD = 25). The F-statistic is highly significant, confirming the model as a whole is meaningful.
+The residuals are also reassuringly symmetric (median ≈ −0.59, roughly balanced IQR), suggesting no major misspecification. The point estimate is much closer to the expected LATE of 75.
+
+## Let's now analyse our data with the `rdrobust` package. Estimate the LATE with local polynomial approximation. You may leave the settings at their defaults, or change settings if you so choose. What do you find? 
+
+```{r}
+rdd_out <- rdrobust(y = dat$Y, x = dat$X, c = 0)
+summary(rdd_out)
+
+cat("rdrobust LATE estimate:", round(rdd_out$coef["Conventional"], 3), "\n")
+cat("Bandwidth selected:    ", round(rdd_out$bws["h", "left"], 3), "\n")
+
+```
+
+This design also is recovering the LATE, even better then the previous attempt. The bias is also lower, which makes sense with this being the preferred robust design.
+
+## Use the `rdplot` function within the package to create a regression discontinuity plot.
+
+```{r}
+rdplot(y = dat$Y, x = dat$X, c = 0,
+       title = "Regression Discontinuity Plot",
+       x.label = "Running Variable (X)",
+       y.label = "Observed Outcome (Y)")
+
+```
+
+
+# Replication
+
+In this section, we will use real-world data to reinforce what we have learned. We will analyse the dataset employed in *[Rural Roads and Local Economic Development](https://www.aeaweb.org/articles?id=10.1257/aer.20180268)*. Physical connectivity through paved roads may be a catapult for economic development. The authors of this paper study the economic impact of a $40 billion national programme designed to build roads across rural India. 
+
+## Skim the paper and fill out the table below to provide a summary of the paper's research design. Be as precise and concise as possible. Edit the table directly in your .qmd to provide your answers.
+
+| Category                | Description                                |
+|-------------------------|--------------------------------------------|
+| Research Question       | What is the causal effect of rural road construction on local economic development in rural India?                                           |
+| Unit of Analysis        | Village                                           |
+| Population              | Rural villages in India eligible under the PMGSY road-building programme                                           | 
+| Treatment               | Receiving a new paved road connection under PMGSY                                           |
+| Identification Strategy | RDD - Compares villages just above and below the threshold                                           |
+| Running Variable        | Village population (from 2001 census)                                           |
+| Cutpoint(s)             |  500 and 1,000 inhabitants (priority thresholds for road eligibility)                                          |
+| Estimand                | LATE of road construction on n economic outcomes for villages near the eligibility cutoffs                                           |
+
+
+## Import the dataset `data/pmgsy_working_aer_mainsample_reduced.dta` and a assign it to an object called `df`. The table below contains the variable names and their descriptions. Use this information to understand the dataset and answer the questions below.
+
+| Variable Name | Description                                           |
+|---------------|-------------------------------------------------------|
+| `v_pop`         | Population in 2001 normalised to the nearest cutpoint   |
+| `r2012`         | Indicator for existence of a rural road in 2012       |
+| `*_index_andrsn` | Indices for local economic outcomes, the outcomes reported in Table 3 of the paper. |
+
+``` {r}
+df <- read_dta("data/pmgsy_working_aer_mainsample_reduced.dta")
+```
+
+
+## Test the first stage with a plot and a simple regression of the treatment on the running variable and the indicator for being above the cutpoint. What do you find?
+
+```{r}
+df <- df |> mutate(above = as.integer(v_pop >= 0))
+
+df |>
+  mutate(bin = cut(v_pop, breaks = 50)) |>
+  group_by(bin) |>
+  summarise(v_pop_mid = mean(v_pop), r2012_mean = mean(r2012)) |>
+  ggplot(aes(x = v_pop_mid, y = r2012_mean)) +
+  geom_point(alpha = 0.6, colour = "gray40") +
+  geom_smooth(data = ~ filter(.x, v_pop_mid < 0),  method = "lm", se = FALSE, colour = "steelblue") +
+  geom_smooth(data = ~ filter(.x, v_pop_mid >= 0), method = "lm", se = FALSE, colour = "steelblue") +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "red") +
+  labs(x = "Population (normalised to cutpoint)", y = "Pr(Road by 2012)",
+       title = "First Stage: Discontinuity at Population Cutpoint") +
+  theme_minimal()
+
+fs <- lm(r2012 ~ above + v_pop, data = df)
+summary(fs)
+
+```
+
+The plot reveals a clear upward jump at the cutpoint - villages just above the threshold are noticeably more likely to have a paved road by 2012. The regression confirms this. The coefficient on above is 0.191, meaning crossing the population threshold raises the probability of road construction by about 19 percentage points.
+
+
+## A common concern in RD designs using population thresholds is manipulation at the threshold (see [Eggers et al. (2017)](https://onlinelibrary.wiley.com/doi/abs/10.1111/ajps.12332)). Using the `rddensity::rdplotdensity()` function, test for sorting in around the cutpoint. What do you find? 
+
+```{r}
+rdd <- rddensity(X = df$v_pop, c = 0)
+summary(rdd)
+
+rdplotdensity(rdd, X = df$v_pop,
+              xlabel = "Population (normalised to cutpoint)",
+              ylabel = "Density")
+
+```
+
+From this test, we can see that there is no evidence of manipulation or sorting. The two curves meet very smoothly at the cutpoint, and their confidence bands overlap substantially at zero. There is no visible spike or gap in the histogram around 0 either.
+
+## Estimate the LITT for the transport index with `rdrobust`. Let the package choose the optimal bandwidth and the optimal polynomial order. Interpret the results and the parameters chosen by the package (you may ignore all parameters related to bias estimation). 
+
+``` {r}
+rd_transport <- rdrobust(y = df$transport_index_andrsn,
+                         x = df$v_pop,
+                         c = 0)
+summary(rd_transport)
+```
+
+Sample Size: 11,432 (6,018 below, 5,414 above the cutpoint)
+
+Bandwidth: h = 31.050
+
+Polynomial Order: p = 1
+
+RD Effect (LITT): 0.063 : Villages just above the population threshold — and therefore more likely to receive a road — score about 0.063 standard deviations higher on the transport index than comparable villages just below.
+
+Z-Statistic: 0.606 : Effect is indistinguishable from 0.
+
+
+## Now estimate the LATE for the transport index with `rdrobust`. Use a bandwidth of 84 and leave the other parameters to their default values. Interpret the result and compare it to the one's reported in the paper.
+
+``` {r}
+rd_transport_iv <- rdrobust(y = df$transport_index_andrsn,
+                             x = df$v_pop,
+                             c = 0,
+                             h = 84,
+                             fuzzy = df$r2012)
+summary(rd_transport_iv)
+
+```
+
+Changing the setting from sharp to fuzzy yields a LATE of 0.474 standard deviations,  a substantially larger and now statistically significant effect (p = 0.036). The paper reports a LATE of approximately 0.453 for the transport index in Table 3, which is close to the new estimate of 0.474. The discrepancy arises because of the different kernels used by the paper.
+
+## The authors used a bandwidth of 84 for their main analysis. The `rdrobust` suggested an optimal bandwidth of 31. Write a simple loop that estimates the LATE for the transport index with `rdrobust` for a range of bandwidths `seq(10, 100, by = 10)`. Plot the results with the bandwidth on the x-axis and the estimated LATE on the y-axis. What do you find?
+
+```{r}
+bw_grid <- seq(10, 100, by = 10)
+
+bw_results <- map_dfr(bw_grid, function(h) {
+  fit <- rdrobust(y  = df$transport_index_andrsn,
+                  x  = df$v_pop,
+                  c  = 0,
+                  h  = h,
+                  fuzzy = df$r2012)
+  tibble(
+    bw       = h,
+    late     = fit$coef[1],
+    ci_lower = fit$ci[1, 1],
+    ci_upper = fit$ci[1, 2]
+  )
+})
+
+ggplot(bw_results, aes(x = bw, y = late)) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, fill = "steelblue") +
+  geom_line(colour = "steelblue", linewidth = 0.8) +
+  geom_point(colour = "steelblue", size = 2) +
+  geom_hline(yintercept = 0,  linetype = "dashed", colour = "grey40") +
+  geom_vline(xintercept = 31, linetype = "dotted", colour = "red",
+             linewidth = 0.7) +
+  geom_vline(xintercept = 84, linetype = "dotted", colour = "darkgreen",
+             linewidth = 0.7) +
+  annotate("text", x = 33, y = max(bw_results$ci_upper),
+           label = "Optimal (31)", colour = "red",    hjust = 0, size = 3.5) +
+  annotate("text", x = 86, y = max(bw_results$ci_upper),
+           label = "Paper (84)",   colour = "darkgreen", hjust = 0, size = 3.5) +
+  labs(x = "Bandwidth", y = "LATE (transport index)",
+       title = "Sensitivity of LATE to Bandwidth Choice") +
+  theme_minimal()
+
+```
+
+The point estimate is sensitive to bandwidth at small values, then stabilises. At the MSE-optimal bandwidth of h = 31, the 95% CI is wide and comfortably crosses zero — the effect is not statistically significant. It only becomes significant (the CI lifts above zero) at around h = 70, which is close to the authors' bandwidth of 84. This is concerning because the conclusion of a statistically significant effect on the transport index depends heavily on using a wide bandwidth that brings in villages far from the cutpoint.
+
+
+## Use the `RDHonest::RDHonest()` function to estimate the LATE for the transport index. Leave all arguments at their package defaults. Interpret the results and compare them to the ones obtained with `rdrobust`. 
+
+```{r}
+rd_honest <- RDHonest(transport_index_andrsn | r2012 ~ v_pop,
+                      data   = df,
+                      cutoff = 0)
+print(rd_honest)
+
+```
+
+The LATE has now become 0.238, which is noticeably smaller because RDHonest uses a much narrower bandwidth (h = 25). From this and the other statistics, we can see that the only specification that yields a statistically significant effect is rdrobust at the authors' chosen bandwidth of h = 84. The data near the cutpoint do not contain enough information to validate their claim with statistical confidence. 
+
+
+## BONUS 1: Using the default M-values estimated by RDHonest in the previous question as a baseline, repeat the estimation with these values multiplied by `c(0.01, 0.5, 1, 2, 3)`. Create an informative plot that shows how the estimate and confidence intervals change as we change `M`.
+
+*Delete this line and replace it with your answer.*
+
+
+## BONUS 2: Use placebo cutpoints at  -50, -25, 25, and 50 to estimate the LITT for the transport index using `rdrobust()`. What do you find? 
+
+*Delete this line and replace it with your answer.*
+
+---
+
+:::{.callout-note}
+## Feedback
+
+*Feedback to the problem set will be provided here.*
+
+
+:::

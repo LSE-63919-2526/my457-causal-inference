@@ -1,0 +1,530 @@
+---
+title: "Problem Set 5: Difference-in-Differences"
+subtitle: "MY457 | WT 2026 | Week 10"
+number-sections: true
+format:
+  pdf:
+    toc: false
+    include-in-header:
+      text: |
+        \setkomafont{disposition}{\normalfont\bfseries}
+        \setkomafont{section}{\normalfont\Large\bfseries}
+        \setkomafont{subsection}{\normalfont\normalsize}
+---
+
+```{r setup, include = FALSE}
+# this chunk contains code that sets global options for the entire .qmd.
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, linewidth = 60, echo = T)
+
+# you can include your libraries here:
+library(tidyverse)
+library(here)
+library(knitr)
+library(estimatr)
+library(fixest)
+library(fect)
+library(plm)
+library(broom)
+library(modelsummary)
+library(haven)
+library(ggdag)
+library(did)
+library(fect)
+```
+
+Add your answers to this .qmd file by replacing the dedicated placeholder text. When you are finished, render the .qmd file as a .pdf and make sure you push your work to GitHub.
+
+# Concepts
+
+## In the table below, fill in the missing values and **bold** the values you fill in. Note that treatment is realised across two dimensions: treatment group $G_i \in {0,1}$, and time $t \in {0,1}$. The treatment indicator is thus given by $Z_{it}$. The potential outcomes are given by $Y_{it}(0)$ and $Y_{it}(1)$.
+
+| $i$ | $G_i$  |$t_i$| $Z_{it}$  | $Y_{it}(0)$  | $Y_{it}(1)$  | $Y_{it}$  | $\tau_{it}$ |
+|-----|--------|-----|-----------|--------------|--------------|-----------|----------|
+| 1   | 0      | 0   | 0         | 5            | 10           | **5**     |**5**     |
+| 2   | 0      | 1   | **0**     | 6            | 11           | **6**     |**5**     |
+| 3   | 1      | 0   | 0         | 7            | 9            | **7**     |**2**     |
+| 4   | **1**  |**1**| 1         | 8            | 10           | **10**     |**2**     |
+
+
+## Explain the main identification assumption in difference-in-differences designs. Looking at the table above, can you establish whether this assumption holds? Why or why not?
+
+The main assumption in DiD is the parallel trends assumption, which says that in the absence of treatment, the difference in the outcome variable between the treatment and control groups would have remained constant over time.
+
+It looks like this assumption holds because, the step (+1) in potential outcomes is the same between the G groups.
+
+## Write down the typical 2-period difference-in-differences estimand using potential outcomes notation. Calculate this quantity using the table provided.
+
+$τDiD=(E[Y_{it}​(1)∣G_i​=1,t=1]−E[Y_{it​}(0)∣G_i​=1,t=1])​​$
+$τDiD=(Y_4​−Y_3​)−(Y_2​−Y_1​)$
+$τDiD=(10​−7​)−(6-5)=2$
+
+
+## Write down the plug-in estimator for the ATT in the simple two-period, two-group difference-in-differences design. Estimate the ATT using the observed data in the table above.
+
+$\hat{τ}_{DiD}=(\bar{Y}_{1,2}-\bar{Y}_{1,1})-(\bar{Y}_{0,2}-\bar{Y}_{0,1})$
+$τDiD=(10-7​)−(6-5​)=2$
+
+## Scrutinise the two estimators below. When would we use one over the other? 
+
+1. 
+
+$$
+Y_{it}(Z) = \alpha_i +  \gamma t + \tau Z + \epsilon_{it}
+$$
+
+2. 
+
+$$
+\hat{Y_i} = \hat{\mu} + \hat{\gamma} G_i + \hat{\delta} T + \hat{\tau} G_i t + \hat{\epsilon}_i
+$$
+
+1. Two-Way Fixed Effects Estimator
+- Used for panel data - the same units viewed repeatedly over time
+- Have lots of within-time heterogenity to identify tau
+- Concerned about selection bias
+2. Cross-Sectional DiD Estimator
+- Have repeated cross-sections — different individuals sampled from the same groups at each point in time — so a unit fixed effect is infeasible
+- Do not have enough information about or want to ignore within-unit dynamics and use the group level instead
+
+
+# Simulations
+
+## Explain the code below and relate it to a difference-in-differences data generating process. What kind of data (panel or repeated-cross sectional) is this? 
+
+```{r, echo = TRUE}
+set.seed(123)
+n_units <- 1000
+tau <- 25000
+
+G <- rbinom(n_units, 1, 0.5)
+for (i in 1:2) {
+    data <- tibble(
+        ID = 1:n_units,
+        G = G,
+        T = ifelse(i == 2, 1, 0)
+    )
+
+    if (i == 1) {
+        sim_data <- data
+    } else {
+        sim_data <- rbind(sim_data, data)
+    }
+}
+
+Y0 <- rnorm(n_units, 50000, 2500)
+
+data1 <- sim_data |>
+    mutate(
+        Y0 = c(Y0, Y0 * 1.1),
+        Y0 = ifelse(G == 1, Y0 + 10000, Y0),
+        Y1 = Y0 + tau,
+        Y = ifelse(G == 1 & T == 1, Y1, Y0)
+    )
+```
+
+
+The data design draws a potential outcome for each unit from a normal distribution. The $Y_0 =$ line imposes a constant time trend where all units' untreated outcomes grow by 10% between periods regardless of group. The shift of 10,000 gives the treatment group systematically higher baseline outcomes. In these ways, the parallel trends assumption holds because the time trend (1.1) is applied identically to all groups.
+
+This is panel data - $G=G$ is drawn once outside the loop and then the units are reused. The same is true for $Y_0$ - is is drawn once and then the same variable is scaled. 
+
+
+## Using the potential outcomes in our simulated data, create a plot visualizing the difference-in-differences estimator.
+
+``` {r}
+# cell means from the DGP
+plot_df <- tribble(
+  ~group,            ~t, ~y,
+  "Control",          0,  50000,
+  "Control",          1,  55000,
+  "Treated (obs)",    0,  60000,
+  "Treated (obs)",    1,  76500,
+  "Treated (CF Y(0))", 0, 60000,
+  "Treated (CF Y(0))", 1, 66000
+)
+
+# annotation data
+att_df <- tibble(
+  t     = c(1, 1),
+  y     = c(66000, 76500),
+  label = c("Counterfactual\n66,000", "Observed\n76,500")
+)
+
+# plot
+ggplot(plot_df, aes(x = t, y = y, colour = group, linetype = group)) +
+  # lines
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 3) +
+  # ATT brace: segment between CF and observed at t = 1
+  annotate(
+    "segment",
+    x = 1.05, xend = 1.05, y = 66000, yend = 76500,
+    colour = "#1D9E75", linewidth = 0.7,
+    arrow = arrow(ends = "both", length = unit(0.08, "inches"), 
+    type = "closed")
+  ) +
+  annotate(
+    "label",
+    x = 1.08, y = 71250,
+    label = "ATT = 25,000",
+    colour = "#1D9E75", size = 3.2, hjust = 0, label.size = 0
+  ) +
+  # point labels
+  geom_text(
+    data = filter(plot_df, t == 0),
+    aes(label = scales::comma(y)),
+    hjust = 1.2, size = 3, show.legend = FALSE
+  ) +
+  geom_text(
+    data = filter(plot_df, t == 1),
+    aes(label = scales::comma(y)),
+    hjust = -0.15, size = 3, show.legend = FALSE
+  ) +
+  # aesthetics
+  scale_colour_manual(values = c(
+    "Control"              = "#1D9E75",
+    "Treated (obs)"        = "#185FA5",
+    "Treated (CF Y(0))"    = "#185FA5"
+  )) +
+  scale_linetype_manual(values = c(
+    "Control"              = "solid",
+    "Treated (obs)"        = "solid",
+    "Treated (CF Y(0))"    = "dashed"
+  )) +
+  scale_x_continuous(
+    breaks = c(0, 1),
+    labels = c("t = 0 (pre)", "t = 1 (post)"),
+    limits = c(-0.3, 1.4)
+  ) +
+  scale_y_continuous(
+    labels = scales::comma,
+    limits = c(44000, 82000)
+  ) +
+  labs(
+    title   = "Difference-in-differences: potential outcomes",
+    x       = NULL,
+    y       = "Y (outcome)",
+    colour  = NULL,
+    linetype = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position   = "bottom",
+    panel.grid.minor  = element_blank(),
+    plot.title        = element_text(size = 13, face = "plain")
+  )
+
+```
+
+
+## Without using a regression, estimate the canonical two-period difference-in-differences using only `Y`, `G`, and `t`. What do you find?
+
+``` {r}
+data1 |>
+  group_by(G, T) |>
+  summarise(Y_bar = mean(Y), .groups = "drop") |>
+  summarise(
+    DiD = (Y_bar[G == 1 & T == 1] - Y_bar[G == 1 & T == 0]) -
+          (Y_bar[G == 0 & T == 1] - Y_bar[G == 0 & T == 0])
+  )
+
+```
+
+The estimate I recoevered is 25,001, which is almost exactly the true tau of 25,000. This is because the parallel trends assumption holds and there is very little noise in the sampling data.
+
+
+## Now estimate the difference-in-differences design using linear regression. Do you find any differences to your previous estimation? Why or why not?
+
+``` {r}
+did_reg <- lm(Y ~ G + T + G:T, data = data1)
+summary(did_reg)
+
+```
+
+The result here is almost the same, 0.2 closer to the true tau then by calculating manually (which is most likely due to uncontrollable sampling noise). These estimates are nearly identical because in this case of DiD, OLS with a treatment dummy, a time dummy, and their interaction is algebraically equivalent to computing the four cell means and differencing them.
+
+
+## Now consider a new data generating process, given by the simulation code below. Explain how this data generating process differs from the previous one.
+
+```{r}
+set.seed(123)
+
+n_units <- 1000
+n_periods <- 20
+att_0 <- 5000
+
+units <- tibble(
+    ID = 1:n_units,
+    G = rbinom(n_units, 1, 0.5),
+    Y0_base = rnorm(n_units, 50000, 2500),
+    cohort = if_else(G == 1L, 
+    sample(6:n_periods, n_units, replace = TRUE), NA_integer_)
+)
+
+data2 <- units |>
+    cross_join(tibble(P = 1:n_periods)) |>
+    mutate(
+        event_time = if_else(!is.na(cohort), P - cohort, NA_integer_),
+        Z = if_else(!is.na(event_time) & event_time >= 0, 1L, 0L),
+        tau_it = if_else(Z == 1L, att_0 + 500 * event_time, 0),
+        Y0 = Y0_base * (1 + P / 10) + G * 10000,
+        Y1 = Y0 + tau_it,
+        Y = if_else(Z == 1L, Y1, Y0)
+    )
+```
+
+The previous data design had only two periods, where this has 20. The 'cross_join' function is used to make sure that every unit appears in every period (balanced panel design).
+
+Previously, all the treated units entered treatment at the same time. However, here, each treated unit is assigned its own treatment time grouping. The previous data also had homogenous treatment effects; this data has heterogeneous treatment effects because the calendar period means different things for different cohorts.
+
+Finally, because the growth rate in this new data set, unlike the previous one, is not linear, parallel trends does not hold across levels. Sifferent units trend at different rates even absent treatment.
+
+
+## Using the new simulated data, estimate the difference-in-differences design using a two-way fixed effects linear regression. You can do this in multiple ways: using `lm` and `factor()`, using `plm` with `model = "within"` and `effect = "twoways"`, or using `fixest`. Pick two of these methods and compare the results in a table (omitting FEs from the output).
+
+```{r}
+# fixest
+twfe_fixest <- feols(Y ~ Z | ID + P, data = data2, cluster = ~ID)
+
+# plm
+panel_data  <- pdata.frame(data2, index = c("ID", "P"))
+twfe_plm    <- plm(Y ~ Z, 
+                data = panel_data, 
+                model = "within", 
+                effect = "twoways")
+
+# table
+modelsummary(
+  list("TWFE (fixest)" = twfe_fixest,
+       "TWFE (plm)"    = twfe_plm),
+  coef_map   = c("Z" = "Treatment (Z)"),
+  gof_map    = c("nobs", "r.squared"),
+  stars      = c("*" = 0.05, "**" = 0.01, "***" = 0.001),
+  title      = "TWFE estimates of the ATT"
+)
+```
+
+Both estimators return the same point estimate. However (using some AI math), this is somewhat far from the true point estimate, which should be somewhere between 7,000 and 9,500, depending on the cohort.
+
+The standard error discrepancy is also notable; the plm standard error is almost three times smaller. This is because feols clusters at the unit level by default, correctly accounting for within-unit serial correlation across the 20 periods. plm's default SE assumes homoskedastic errors, which is implausible in a panel with dynamic treatment effects and unit-specific trends. The fixest standard error is the more likely standard error for the data.
+
+The R^2 difference is due to estimator mechanics — fixest absorbs the fixed effects before reporting fit, so its R^2 reflects variation explained after demeaning, whereas plm reports the within-R^2 only.
+
+
+## Using `data2` and either the *[fect](https://yiqingxu.org/packages/fect/fect.html)* package or the *[did](https://cran.r-project.org/web/packages/did/vignettes/did-basics.html)* package, estimate dynamic period-specific ATTs and provide an event study plot. What do you find?
+
+```{r}
+# cohort must be 0 for never-treated units (did package convention)
+data2 <- data2 |>
+  mutate(cohort_did = replace_na(cohort, 0))
+
+cs_att <- att_gt(
+  yname       = "Y",
+  tname       = "P",
+  idname      = "ID",
+  gname       = "cohort_did",
+  data        = data2,
+  control_group = "nevertreated", 
+  est_method  = "reg",
+  clustervars = "ID"
+)
+
+# aggregate to event-study (dynamic) ATTs
+es <- aggte(cs_att, type = "dynamic", na.rm = TRUE)
+summary(es)
+
+# event study plot
+ggdid(es) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey40") +
+  labs(
+    title    = "Event study: Callaway & Sant'Anna dynamic ATTs",
+    subtitle = "Never-treated units as control group",
+    x        = "Event time (periods since treatment)",
+    y        = "ATT estimate"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.minor = element_blank(),
+    plot.title       = element_text(size = 13, face = "plain"),
+    plot.subtitle    = element_text(size = 11, colour = "grey40")
+  )
+```
+
+The estimates for the pre-treatment periods are all indistiguishable from 0. The estimated ATT at event time zero is close to the baseline treatment effect of tau = 5,000, which is good. The ATT then grows almost linearly with time, by the expected slop of about 500.
+
+
+# Replication
+
+In this section, we will use real-world data to reinforce what we have learned. We will analyse the dataset employed in *[The Effects of Income Transparency on  Well-Being: Evidence from a Natural Experiment (Perez-Truglia, 2020)](https://pubs.aeaweb.org/doi/pdfplus/10.1257/aer.20160256)*. 
+
+In recent decades, there has been an increasing push towards higher transparency in income, wealth, and earnings. Transparency facilitates comparisons between individuals. In 2001, Norwegian tax records became accessible online allowing individuals to have access to these easily, assuming they had access to internet.
+
+The author uses this setting to analyse the effect of salary transparency on the subjective well-being of individuals across the income distribution.
+
+
+## Skim the paper and fill out the table below to provide a summary of the paper's research design (focus on equation 1 of the paper). Be as precise and concise as possible. Edit the table directly in your .qmd to provide your answers.
+
+|Category           | Description                                                           | 
+|-------------------|-----------------------------------------------------------------------|
+| Research Question | Does income transparency widen the well-being gap between richer and poorer individuals, via increased income comparisons?                                                                      |
+| Unit of Analysis  | Individual respondent                                                                      |
+| Data structure    | Repeated cross-sections (Norwegian survey data, 1985–2013)                                                                      |
+| $t$               | Binary indicator (year >= 2001), marking the onset of online tax record accessibility                                                                       |
+| $G$               | Continuous: individual income rank in the national household income distribution (0–1)                                                                      |
+| $Y$               | Subjective well-being — self-reported happiness or life satisfaction (ordered scale)                                                                      |
+| Control Group     | Lower-income-rank individuals (low G); also, pre-2001 observations for all individuals, and German respondents as a cross-country placebo                                                                      |
+
+
+## Read into `R` the replication data set (`Norway-MSD.dta`) and visualise the trend in Norwegian happiness (`po_happy`) over the years. Include a vertical line to indicate when treatment came into effect.
+
+```{r}
+norway <- read_dta("data/Norway-MSD.dta")
+
+norway |>
+    group_by(year) |>
+    summarise(mean_happy = mean(po_happy, na.rm = TRUE)) |>
+    ggplot(aes(x = year, y = mean_happy)) +
+    geom_line(colour = "#185FA5", linewidth = 0.9) +
+    geom_point(colour = "#185FA5", size = 2.5) +
+    geom_vline(
+    xintercept = 2001,
+    linetype   = "dashed",
+    colour     = "#D85A30",
+    linewidth  = 0.8
+    ) +
+    annotate(
+        "label",
+        x     = 2001,
+        y     = Inf,
+        label = "Online tax records\n(2001)",
+        vjust = 1.5,
+        hjust = 0.5,
+        size  = 3.2,
+        colour     = "#D85A30",
+        label.size = 0
+    ) +
+    scale_x_continuous(breaks = seq(1985, 2013, by = 4)) +
+    labs(
+        title   = "Mean happiness in Norway, 1985–2013",
+        subtitle = "Dashed line marks onset of online income transparency (2001)",
+        x       = NULL,
+        y       = "Mean happiness (survey scale)"
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(
+        panel.grid.minor = element_blank(),
+        plot.title       = element_text(size = 13, face = "plain"),
+        plot.subtitle    = element_text(size = 11, colour = "grey40")
+    )
+```
+
+
+## Why can the author just compare the dependent variable before and after treatment or between groups in the post-treatment period? Which types of confounders does the design eliminate and which ones not? 
+
+Comparing mean happiness before and after 2001 would attribute to the transparency reform any change in Norwegian well-being that happened around that time. However, Norway experienced substantial macroeconomic changes in the early 2000s: rising oil revenues, shifts in unemployment, and broader global trends. Any of these could have shifted happiness independently of the tax list reform. Without a counterfactual for what would have happened absent treatment, a simple pre/post comparison does not identify the causal effect.
+
+The design of the paper covers time-invariant group differences, including time shocks. Equation 1 specifically includes linear time trend interacted with income rank to control for the possibility that the happiness–income gradient was already drifting upward or downward before 2001 for unrelated reasons. The paper does not account for time shocks that differ across income groups, anticipation effects, or survey non-response and rentention.
+
+
+## Estimate the baseline specification as given in equation (1) in the paper using `fixest::feols()`. In addition to the difference-in-differences components, the regression should include a dummy variable for each year, and control for each level of marital status, education, household size, household workers, and gender (`female`). Additionally, age and age squared should be included as continuous control variables. Use heteroscedasticity robust standard errors. What do you find? 
+
+```{r}
+# setup
+norway <- read_dta("data/Norway-MSD.dta") |>
+  mutate(
+    post       = as.integer(year >= 2001),
+    across(c(marital_status, education, hh_size, hh_workers), as.factor)
+  )
+
+# equation 1
+eq1 <- feols(
+  po_happy ~ imp_hh_rank                   # main effect of income rank
+           + imp_hh_rank :post             # DiD: gradient shift post-2001
+           + imp_hh_rank :year             # pre-existing linear gradient trend
+           + i(year)                       # year fixed effects
+           + age + I(age^2)                # age controls
+           + female                        # gender
+           + marital_status + education    # categorical controls
+           + hh_size + hh_workers,         # household controls
+  data = norway,
+  vcov = "hetero"
+)
+
+# table
+modelsummary(
+  list("Happiness (OLS)" = eq1),
+  coef_map = c(
+    "imp_hh_rank"        = "Income rank",
+    "imp_hh_rank:post"   = "Income rank × Post-2001",
+    "imp_hh_rank:year"   = "Income rank × Year (trend)",
+    "age"                = "Age",
+    "I(age^2)"           = "Age²",
+    "female"             = "Female"
+  ),
+  gof_map  = c("nobs", "r.squared"),
+  stars    = c("*" = 0.05, "**" = 0.01, "***" = 0.001),
+  notes    = c("Robust standard errors in parentheses.",
+               "Year FEs and categorical controls (marital status,",
+               "education, household size, household workers) included",
+               "but omitted from output."),
+  title    = "Equation (1): effect of income transparency on happiness"
+)
+```
+
+The central DiD estimate is the Income Rank x Post 2001 estimate, or 0.151. After dividing this number by the pre-period baseline slope of income rank on happiness (0.5) we do get close to the paper's statistic. (I have 30%, whereas the paper reports 29%).
+
+
+## Using the same control variables as above, create an event study plot to test for parallel pre-trends. What do you find? Is this proof the parallel trends assumption holds/is violated? Why or why not?
+
+``` {r}
+# event study model
+event_study_mod <- feols(
+  po_happy ~ i(year, imp_hh_rank, ref = 1999) 
+           + i(year)                          
+           + age + I(age^2) + female 
+           + marital_status + education 
+           + hh_size + hh_workers,
+  data = norway,
+  vcov = "hetero"
+)
+
+# plot
+iplot(event_study_mod, 
+      main = "Event Study: Income Rank and Happiness",
+      xlab = "Year", 
+      ylab = "Estimate (Ref = 1999)")
+abline(h = 0, col = "red", lty = 2)
+abline(v = 2001, col = "darkgrey", lty = 3)
+
+```
+
+In the pre-treatment period, the coefficients, on average, sit at the zero line, which is good. Because there is no obvious "slope" upward or downward right before 2001, this supports the parallel trends assumption. Immediately after 2001, the coefficients jump upward. While is isn't proof that parallel trends holds, it is a strong indication.
+
+
+## The author argues that we should expect stronger effects among individuals with better access to the interet. Test their claim. Do the findings make you more or less confident that their interpretation of the results is correct? 
+
+``` {r}
+# Interaction model: DiD x Internet Access
+eq_internet <- feols(
+  po_happy ~ imp_hh_rank * post * higher_internet   # Triple interaction
+           + i(year)                                # Year FEs
+           + age + I(age^2) + female 
+           + marital_status + education 
+           + hh_size + hh_workers,
+  data = norway,
+  vcov = "hetero"
+)
+
+```
+
+Becuase the estimate for imp_hh_rank:post:higher_internet is positive and statistically significant, we can say that the happiness gap widened much more significantly for people who actually had the tools to easily look up their neighbors' salaries. This was the claim made in the paper, so we should have more confident in it now after running a triple interaction. However, for individuals with low internet access, this finding does not hold (but they did not claim this).
+
+
+## All in all, are you convinced by the author's research design and interpretation of the results? Why or why not? 
+
+Statistically, the design is convincing because of the triple DiD in the previous question and the evidence for parallel trends. The author's interpretation does appear to be a logical explanation for the effects on well-being. 
+
+I would remain cautious of the findings for two small reasons:
+
+1. People with "higher internet" in 2001 weren't a random group. They were likely wealthier, more urban, and perhaps more competitive or status-conscious to begin with. Even with the controls, there could be unobserved traits about internet users that make them more prone to using the internet consistently.
+
+2. Happiness is self-reported. The authors assume here that when people say they are "happy," they mean the same thing in 1985 as they do in 2013. There is a risk that transparency didn't change actual happiness, but just changed how people reported it.

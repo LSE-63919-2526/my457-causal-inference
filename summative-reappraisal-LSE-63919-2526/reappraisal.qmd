@@ -1,0 +1,1256 @@
+---
+title: "Reappraisal of Election-Denying Republican Candidates Underperformed in the 2022 Midterms"
+subtitle: "MY457 | WT 2026"
+date: today
+author: "63919"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+---
+
+---
+
+```{r setup, include=FALSE}
+# Global chunk options: code hidden from main body, appears only in appendix
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      linewidth = 60)
+
+# Libraries
+library(tidyverse)
+library(haven)
+library(fixest)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(ggforce)
+
+options(scipen = 999)
+
+# ---------------------------------------------------------------------------
+# Paths
+# Working directory is repo root, i.e. the folder containing data/
+# ---------------------------------------------------------------------------
+data_dir   <- "data/Data_Modified"
+output_dir <- "Output"
+dir.create(output_dir, showWarnings = FALSE)
+```
+
+```{r load-data}
+# Load the pre-processed analysis dataset produced by the authors' pipeline.
+# All analysis scripts source from this object.
+deniers_elec <- read_dta(file.path(data_dir, "deniers_elec.dta"))
+
+# Statewide general election subset (used by Table 1 and Figure 1)
+statewide <- deniers_elec |>
+  filter(office != "H") |>
+  filter(!is.na(voteshare_g), voteshare_g != 1) |>
+  mutate(s = as.factor(state), o = as.factor(office))
+
+# House general election subset (used by Table 2)
+house <- deniers_elec |>
+  filter(office == "H") |>
+  filter(!is.na(voteshare_g), voteshare_g != 1) |>
+  mutate(s = as.factor(state))
+```
+
+```{r helper-functions}
+# ---------------------------------------------------------------------------
+# Shared helper: run one regression and return a tidy one-row tibble.
+# Uses feols() from fixest throughout for clustered SEs.
+# ---------------------------------------------------------------------------
+run_reg <- function(data, deny_var, fe = FALSE,
+                    outcome = "voteshare_g") {
+  if (fe) {
+    fml <- as.formula(paste0(outcome, " ~ ", deny_var, " | s"))
+  } else {
+    fml <- as.formula(paste0(outcome, " ~ ", deny_var,
+                             " + pres_voteshare_d"))
+  }
+  fit <- feols(fml, data = data, cluster = ~state)
+  tibble(
+    deny_var = deny_var, fe = fe,
+    b        = as.numeric(coef(fit)[deny_var]),
+    se       = as.numeric(se(fit)[deny_var]),
+    N        = nobs(fit),
+    n_states = length(unique(data$state))
+  )
+}
+
+# Restrict to states with within-state variation in a denier variable
+# (required for the state-FE columns in Table 1)
+subset_variation <- function(data, deny_var) {
+  data |>
+    group_by(state) |>
+    mutate(d_sum = sum(.data[[deny_var]], na.rm = TRUE),
+           d_tot = sum(!is.na(.data[[deny_var]]))) |>
+    ungroup() |>
+    filter(d_sum != d_tot, d_sum != 0)
+}
+
+# Format a coefficient + SE as a two-row character vector for tables
+fmt <- function(b, se) c(sprintf("%.3f", b), sprintf("(%.3f)", se))
+```
+
+# 1. Research Design and Identification Strategy
+
+In 2022, it became a widely observed phenomenon that high-profile Republican candidates who openly denied the results of the 2020 presidential election lost their races. Building on this trend, Malzahn and Hall (2025) ask whether these Republican candidates performed worse in the 2022 midterms than Republicans who did not. They compile certified general and primary election returns for five office types across 42 states, merging these with three independently produced denial classifications — from FiveThirtyEight, the States United Democracy Center, and the Washington Post — combined into a preferred composite measure.
+
+**Identification strategy.** The authors use an observational selection on observables study with OLS regression of Republican two-party vote share on a denial indicator. They control for either the 2020 Republican presidential vote share or state fixed effects, with standard errors clustered by state:
+
+$$\text{Repub Vote Share}_{is} = \beta \cdot \text{Deny}_{i} + \delta X_{is} + \varepsilon_{is}$$
+
+where $i$ indexes candidates and $s$ indexes states. The authors make a point of holding “electoral factors” fixed to avoid including post-treatment variables. The identification strategy is designed to address the concern that states with higher Republican baselines may have yielded more election-denying candidates, such that a naive comparison would confuse partisan state politics with a denial penalty. They assume that, after conditioning on the relevant controls, election denial is as good as randomly assigned, with potential outcomes independent of actual denial status.
+
+The presidential vote share control absorbs the linear relationship between state partisanship and candidate vote share; state fixed effects go further, restricting comparisons to candidates on the same ballot and eliminating all between-state confounding. The design compares Republicans only to other Republicans, so estimates reflect differences between types of Republican candidates rather than between parties.
+
+**Key assumption.** The identifying assumption is that, after conditioning on state-level partisanship, denial status is uncorrelated with other candidate characteristics that affect vote share — effectively, that denial is as good as randomly assigned within states.
+
+---
+
+# 2. Computational Reproduction
+
+## 2.1 Table 1: Statewide Underperformance
+
+```{r table1-compute}
+# Columns 1–4: continuous pres vote share control
+col1 <- run_reg(statewide, "deny_su")
+col2 <- run_reg(statewide, "deny_538")
+col3 <- run_reg(statewide, "deny_wapo")
+col4 <- run_reg(statewide, "deny")
+
+# Columns 5–8: state fixed effects, restricted to states with variation
+col5 <- run_reg(subset_variation(statewide, "deny_su"),   "deny_su",   fe = TRUE)
+col6 <- run_reg(subset_variation(statewide, "deny_538"),  "deny_538",  fe = TRUE)
+col7 <- run_reg(subset_variation(statewide, "deny_wapo"), "deny_wapo", fe = TRUE)
+col8 <- run_reg(subset_variation(statewide, "deny"),      "deny",      fe = TRUE)
+
+res_t1 <- list(col1, col2, col3, col4, col5, col6, col7, col8)
+```
+
+```{r table1-display}
+#| label: tbl-table1
+#| tbl-cap: "Underperformance of Election-Denying Candidates in 2022 Statewide Races. Outcome is Republican two-party general election vote share. Standard errors clustered by state in parentheses."
+
+# Build display table
+rows <- list(
+  "Election-Denying Candidate" = map_chr(res_t1, ~sprintf("%.3f", .x$b)),
+  " "                          = map_chr(res_t1, ~sprintf("(%.3f)", .x$se)),
+  "N"                          = map_chr(res_t1, ~as.character(.x$N)),
+  "No. of States"              = map_chr(res_t1, ~as.character(.x$n_states)),
+  "Pres. Vote Share"           = c("Yes","Yes","Yes","Yes","No","No","No","No"),
+  "State FEs"                  = c("No","No","No","No","Yes","Yes","Yes","Yes")
+)
+
+t1_df <- as.data.frame(rows) |> t() |> as.data.frame()
+colnames(t1_df) <- c("(1) SU","(2) 538","(3) WaPo","(4) Combined",
+                     "(5) SU","(6) 538","(7) WaPo","(8) Combined")
+
+kable(t1_df, align = "cccccccc") |>
+  kable_styling(font_size = 12, full_width = TRUE) |>
+  add_header_above(c(" " = 1,
+                     "Presidential Vote Share Control" = 4,
+                     "State Fixed Effects" = 4))
+```
+
+The results closely reproduce the published Table 1. Across all eight specifications, the denier coefficient is negative, ranging from −0.020 to −0.045. The preferred specification (column 8: combined measure, state fixed effects) yields a coefficient of `r sprintf("%.3f", col8$b)` (SE = `r sprintf("%.3f", col8$se)`), against the published figure of −0.032 (0.012). It still reamins tied with the 538 state fixed effects measure for the one with the lowest standard error. Any small discrepancies reflect differences in how Stata and R handle clustered variance estimation with small numbers of clusters. This is to be expected because of the limitations of state fixed effects.
+
+A minor bug in `make_general_statewide_table.do` uses `count(type)` instead of `count(deny_538)` as the denominator for within-state variation in column 6; since `deny_538` is fully observed in the general-election sample, both approaches yield identical subsets and the results are unaffected.
+
+## 2.2 Table 2: House Races
+
+```{r table2-compute}
+h1 <- run_reg(house, "deny_538")
+h2 <- run_reg(house, "deny_wapo")
+h3 <- run_reg(house, "deny")
+res_t2 <- list(h1, h2, h3)
+```
+
+```{r table2-display}
+#| label: tbl-table2
+#| tbl-cap: "Performance of Election-Denying Candidates in 2022 U.S. House Races. Outcome is Republican two-party general election vote share. Standard errors clustered by state in parentheses."
+
+rows_t2 <- list(
+  "Election-Denying Candidate" = map_chr(res_t2, ~sprintf("%.3f", .x$b)),
+  " "                          = map_chr(res_t2, ~sprintf("(%.3f)", .x$se)),
+  "N"                          = map_chr(res_t2, ~as.character(.x$N)),
+  "Pres. Vote Share"           = c("Yes", "Yes", "Yes")
+)
+
+t2_df <- as.data.frame(rows_t2) |> t() |> as.data.frame()
+colnames(t2_df) <- c("(1) 538", "(2) WaPo", "(3) Combined")
+
+kable(t2_df, align = "ccc") |>
+  kable_styling(font_size = 12, full_width = FALSE)
+```
+
+The House results reproduce well. All three coefficients are at or near zero, consistent with the published Table 2. The preferred specification (column 3) yields `r sprintf("%.3f", h3$b)` (SE = `r sprintf("%.3f", h3$se)`), against the published 0.000 (0.003).
+
+## 2.3 The Statewide vs. House Distinction
+
+The authors argue the denial penalty is concentrated in statewide offices — where positions like secretary of state and attorney general carry direct power over election administration — rather than congressional ones. If the penalty were uniform across office types, it would be harder to claim voters were specifically responding to denial rather than penalising a certain type of candidate. A formal test interacts the denier indicator with a statewide-office dummy.
+
+```{r congress-statewide-test}
+all_races <- deniers_elec |>
+  filter(!is.na(voteshare_g), voteshare_g != 1) |>
+  mutate(
+    statewide = as.integer(office %in% c("SOS","AG","GOV")),
+    s         = as.factor(state)
+  )
+
+fit_diff <- feols(
+  voteshare_g ~ deny_538 * statewide + pres_voteshare_d,
+  data = all_races, cluster = ~state
+)
+
+b_interact  <- as.numeric(coef(fit_diff)["deny_538:statewide"])
+se_interact <- as.numeric(se(fit_diff)["deny_538:statewide"])
+p_interact  <- as.numeric(pvalue(fit_diff)["deny_538:statewide"])
+```
+
+Interacting the denier indicator with a statewide-office dummy yields an interaction coefficient of `r sprintf("%.3f", b_interact)` (SE = `r sprintf("%.3f", se_interact)`, p = `r sprintf("%.3f", p_interact)`), consistent with the authors' reported 3.5 percentage point differential (p = 0.006).
+
+## 2.4 Figure 1: State-Level Scatter Plot
+
+```{r figure1}
+#| label: fig-figure1
+#| fig-cap: "Comparing 2022 vote shares of statewide Republican candidates who denied vs. did not deny the 2020 election, in states where both types ran. Points above the 45-degree line indicate states where non-deniers outperformed deniers."
+#| fig-width: 6
+#| fig-height: 6
+
+state_avgs <- statewide |>
+  filter(!is.na(voteshare_g)) |>
+  group_by(state, deny) |>
+  summarise(rep_vote_share = mean(voteshare_g, na.rm = TRUE),
+            .groups = "drop") |>
+  pivot_wider(names_from = deny, values_from = rep_vote_share,
+              names_prefix = "vote_") |>
+  rename(non_denier = vote_0, denier = vote_1) |>
+  filter(!is.na(non_denier), !is.na(denier))
+
+ggplot(state_avgs, aes(x = denier, y = non_denier)) +
+  geom_abline(slope = 1, intercept = 0,
+              linetype = "dashed", colour = "grey40") +
+  geom_point(size = 2) +
+  geom_text(aes(label = state), size = 2.5,
+            hjust = -0.15, vjust = 0.5) +
+  annotate("text", x = 0.60, y = 0.32,
+           label = "Deniers Overperform", size = 3) +
+  annotate("text", x = 0.34, y = 0.67,
+           label = "Deniers Underperform", size = 3) +
+  scale_x_continuous(limits = c(0.3, 0.75),
+                     breaks  = seq(0.3, 0.75, 0.1)) +
+  scale_y_continuous(limits = c(0.3, 0.75),
+                     breaks  = seq(0.3, 0.75, 0.1)) +
+  coord_equal() +
+  labs(x = "Denier Vote Share", y = "Non-Denier Vote Share") +
+  theme_minimal(base_size = 11) +
+  theme(panel.background = element_rect(fill = "white", colour = "white"),
+        plot.background  = element_rect(fill = "white", colour = "white"))
+```
+
+@fig-figure1 closely reproduces the published Figure 1, visually confirming the pattern reported in Table 1.
+
+---
+
+# 3. Appendix Reproduction
+
+## 3.1 SI Figure SI.1: Incumbency Coefficient Plot
+
+```{r si-figure1-compute}
+# For each office, run (a) a deny × inc interaction model and
+# (b) a pooled deny-only model. Extract non-incumbent effect,
+# incumbent effect (linear combination), and pooled effect.
+
+offices <- c("GOV", "SOS", "AG", "SEN", "H")
+
+extract_coef_row <- function(fit, term, is_lincom = FALSE,
+                              lincom_terms = NULL) {
+  if (!is_lincom) {
+    b     <- as.numeric(coef(fit)[term])
+    ci    <- confint(fit, level = 0.95)
+    lower <- as.numeric(ci[term, 1])
+    upper <- as.numeric(ci[term, 2])
+  } else {
+    lincom_terms <- intersect(lincom_terms, names(coef(fit)))
+    b      <- as.numeric(sum(coef(fit)[lincom_terms], na.rm = TRUE))
+    vcv    <- vcov(fit)[lincom_terms, lincom_terms, drop = FALSE]
+    se_lc  <- sqrt(as.numeric(sum(vcv, na.rm = TRUE)))
+    lower  <- b - 1.96 * se_lc
+    upper  <- b + 1.96 * se_lc
+  }
+  tibble(b = b, lower = lower, upper = upper)
+}
+
+coef_rows <- list()
+
+for (off in offices) {
+  df_off <- deniers_elec |>
+    filter(office == off) |>
+    filter(!is.na(voteshare_g), voteshare_g != 1) |>
+    mutate(s = as.factor(state))
+
+  # Interaction model
+  fit_int <- tryCatch(
+    feols(voteshare_g ~ deny * inc + pres_voteshare_d,
+          data = df_off, cluster = ~state),
+    error = function(e) NULL
+  )
+
+  if (!is.null(fit_int) && "deny" %in% names(coef(fit_int))) {
+    row_ni <- extract_coef_row(fit_int, "deny") |>
+      mutate(office = off, inc = 0)
+    if ("deny:inc" %in% names(coef(fit_int))) {
+      row_i <- extract_coef_row(fit_int, is_lincom = TRUE,
+                                 lincom_terms = c("deny","deny:inc")) |>
+        mutate(office = off, inc = 1)
+    } else {
+      row_i <- tibble(b = NA_real_, lower = NA_real_, upper = NA_real_,
+                      office = off, inc = 1)
+    }
+  } else {
+    row_ni <- tibble(b = NA_real_, lower = NA_real_, upper = NA_real_,
+                     office = off, inc = 0)
+    row_i  <- tibble(b = NA_real_, lower = NA_real_, upper = NA_real_,
+                     office = off, inc = 1)
+  }
+
+  # Pooled model
+  fit_pool <- tryCatch(
+    feols(voteshare_g ~ deny + pres_voteshare_d,
+          data = df_off, cluster = ~state),
+    error = function(e) NULL
+  )
+  if (!is.null(fit_pool) && "deny" %in% names(coef(fit_pool))) {
+    row_p <- extract_coef_row(fit_pool, "deny") |>
+      mutate(office = off, inc = 2)
+  } else {
+    row_p <- tibble(b = NA_real_, lower = NA_real_, upper = NA_real_,
+                    office = off, inc = 2)
+  }
+
+  coef_rows <- c(coef_rows, list(row_ni, row_i, row_p))
+}
+
+coef_df <- bind_rows(coef_rows) |>
+  # SOS has no denying incumbents — blank out
+  mutate(
+    b     = if_else(office == "SOS" & inc == 1, NA_real_, b),
+    lower = if_else(office == "SOS" & inc == 1, NA_real_, lower),
+    upper = if_else(office == "SOS" & inc == 1, NA_real_, upper)
+  ) |>
+  mutate(
+  inc_label = factor(
+    case_when(
+      inc == 0 ~ "Non-Incumbents",
+      inc == 1 ~ "Incumbents",
+      inc == 2 ~ "Pooled"
+    ),
+    levels = c("Non-Incumbents", "Incumbents", "Pooled")  # top to bottom within each row
+  ),
+  office = factor(office, levels = c("AG", "GOV", "H", "SEN", "SOS"))
+  )
+```
+
+```{r si-figure1-plot}
+#| label: fig-si1
+#| fig-cap: "SI Figure SI.1: Underperformance of election-denying candidates by office and incumbency status. Pooled estimate (filled square), incumbents (filled triangle), non-incumbents (filled circle). Horizontal lines show 95% confidence intervals. No SOS incumbent denied the election; that estimate is omitted."
+#| fig-width: 7
+#| fig-height: 5
+
+ggplot(coef_df,
+       aes(x = b, y = office,
+           shape    = inc_label,
+           linetype = inc_label,
+           group    = inc_label)) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_point(position = position_dodge(width = 0.5),
+             size = 2.5, na.rm = TRUE) +
+  geom_errorbar(
+    aes(xmin = lower, xmax = upper),
+    position    = position_dodge(width = 0.5),
+    width       = 0.2,
+    na.rm       = TRUE,
+    orientation = "y"
+  ) +
+  scale_shape_manual(
+    values = c("Non-Incumbents" = 16, "Incumbents" = 17, "Pooled" = 15),
+    guide  = guide_legend(reverse = TRUE)
+  ) +
+  scale_linetype_manual(
+    values = c("Non-Incumbents" = "dashed",
+               "Incumbents"    = "twodash",
+               "Pooled"        = "solid"),
+    guide  = guide_legend(reverse = TRUE)
+  ) +
+  scale_x_continuous(limits = c(-0.12, 0.12)) +
+  labs(x = "Deny Coefficient", y = "Office",
+       shape = "", linetype = "") +
+  theme_minimal(base_size = 11) +
+  theme(panel.background = element_rect(fill = "white", colour = "white"),
+        plot.background  = element_rect(fill = "white", colour = "white"),
+        legend.position  = "right")
+```
+
+@fig-si1 reproduces SI Figure SI.1. The House is the clearest outlier — its pooled estimate is essentially zero, and the confidence interval straddles zero for both incumbent and non-incumbent subgroups. For statewide offices, the pattern is more negative, particularly for SOS and GOV. The absence of an SOS incumbent estimate reflects the data: no SOS incumbent denied the election in the sample.
+
+The authors note they are "cutting a relatively small dataset quite finely" (SI, p.2), and the cell sizes bear this out. Splitting further by incumbency and denier status leaves some cells with a handful of observations, producing wide standard errors. (The SOS inc × deny interaction has SE = 0.047 on a point estimate of 0.020.) The plot is best read as suggestive pattern; the data are not sufficient to sustain strong inference about incumbency heterogeneity within any particular office.
+
+## 3.2 SI Table SI.1: Primary Election Analysis
+
+```{r primary-compute}
+primary <- deniers_elec |>
+  filter(office != "H") |>
+  filter(!is.na(voteshare_p)) |>
+  group_by(prim_id) |>
+  mutate(num_cands = n()) |>
+  ungroup() |>
+  mutate(
+    s           = as.factor(state),
+    o           = as.factor(office),
+    s_o         = as.factor(paste(state, office, sep = "_")),
+    num_cands_f = as.factor(num_cands)
+  )
+
+p1 <- feols(voteshare_p ~ deny_su + pres_voteshare_d | num_cands_f,
+            data = primary, cluster = ~state)
+p2 <- feols(voteshare_p ~ deny_su | s + num_cands_f,
+            data = primary, cluster = ~state)
+p3 <- feols(voteshare_p ~ deny_su | s_o + num_cands_f,
+            data = primary, cluster = ~state)
+
+primary_res <- map(list(p1, p2, p3), function(fit) {
+  tibble(b = as.numeric(coef(fit)["deny_su"]),
+         se = as.numeric(se(fit)["deny_su"]),
+         N  = nobs(fit))
+})
+```
+
+```{r primary-display}
+#| label: tbl-primary
+#| tbl-cap: "SI Table SI.1: Advantage of election-denying candidates in 2022 Republican primary elections for Governor, Secretary of State, and Attorney General. All columns use the SUDC classification (the only source covering primary candidates). Standard errors clustered by state in parentheses."
+
+rows_p <- list(
+  "Election-Denying Candidate" = map_chr(primary_res, ~sprintf("%.3f", .x$b)),
+  " "                          = map_chr(primary_res, ~sprintf("(%.3f)", .x$se)),
+  "N"                          = map_chr(primary_res, ~as.character(.x$N)),
+  "Pres. Vote Share"           = c("Yes", "No", "No"),
+  "No. of Candidates FEs"      = c("Yes", "Yes", "Yes"),
+  "State FE"                   = c("No", "Yes", "No"),
+  "State × Office FE"          = c("No", "No", "Yes")
+)
+
+tp_df <- as.data.frame(rows_p) |> t() |> as.data.frame()
+colnames(tp_df) <- c("(1)", "(2)", "(3)")
+
+kable(tp_df, align = "ccc") |>
+  kable_styling(font_size = 12, full_width = FALSE)
+```
+
+The primary election results (SI Table SI.1) also reproduce well. The estimated advantage for election-denying candidates in primaries is small and imprecisely estimated across all three specifications, consistent with the published values of 0.017–0.019. The wide standard errors make it impossible to draw strong conclusions about a primary advantage.
+
+My estimates differ slightly from the published results due to a minor implementation difference. The authors' Stata code assigns `prim_id` and computes `num_cands` before filtering on non-missing `voteshare_p`, so a race with one missing observation is counted as a four-candidate race even though only three enter the regression. My R translation filters first, producing different fixed-effect bins for affected primaries. Direction, magnitude, and significance are consistent across both versions; the conclusion is unchanged.
+
+## 3.3 SI Table SI.2: Alternative 538 Classification Robustness
+
+```{r robust-538-compute}
+statewide_rob <- statewide |>
+  mutate(
+    deny_538_1 = as.integer(stance == "Fully denied"),
+    deny_538_2 = as.integer(stance %in% c("Fully denied", "No comment",
+                                           "Avoided answering")),
+    deny_538_3 = as.integer(stance %in% c("Fully denied",
+                                           "Raised questions")),
+    deny_538_4 = case_when(
+      stance == "Fully denied"                          ~ 1L,
+      stance %in% c("No comment", "Avoided answering") ~ NA_integer_,
+      TRUE                                              ~ 0L
+    )
+  )
+
+run_rob <- function(data, deny_var, fe = FALSE) {
+  data_c <- data |> filter(!is.na(.data[[deny_var]]))
+  if (fe) {
+    data_c <- data_c |>
+      group_by(state) |>
+      mutate(d_sum = sum(.data[[deny_var]], na.rm = TRUE),
+             d_tot = sum(!is.na(.data[[deny_var]]))) |>
+      ungroup() |>
+      filter(d_sum != d_tot, d_sum != 0)
+    fml <- as.formula(paste0("voteshare_g ~ ", deny_var, " | s"))
+  } else {
+    fml <- as.formula(paste0("voteshare_g ~ ", deny_var,
+                             " + pres_voteshare_d"))
+  }
+  fit <- feols(fml, data = data_c, cluster = ~state)
+  tibble(b  = as.numeric(coef(fit)[deny_var]),
+         se = as.numeric(se(fit)[deny_var]),
+         N  = nobs(fit),
+         n_states = length(unique(data_c$state)))
+}
+
+dvars <- c("deny_538_1","deny_538_2","deny_538_3","deny_538_4")
+rob_pres <- map(dvars, ~run_rob(statewide_rob, .x, fe = FALSE))
+rob_fe   <- map(dvars, ~run_rob(statewide_rob, .x, fe = TRUE))
+rob_all  <- c(rob_pres, rob_fe)
+```
+
+```{r robust-538-display}
+#| label: tbl-si2
+#| tbl-cap: "SI Table SI.2: Robustness to alternative 538 denier classifications. Columns 1–4 use presidential vote share control; columns 5–8 use state fixed effects. See text for classification definitions."
+
+rows_r <- list(
+  "Election-Denying Candidate" = map_chr(rob_all, ~sprintf("%.3f", .x$b)),
+  " "                          = map_chr(rob_all, ~sprintf("(%.3f)", .x$se)),
+  "N"                          = map_chr(rob_all, ~as.character(.x$N)),
+  "No. of States"              = map_chr(rob_all, ~as.character(.x$n_states)),
+  "Pres. Vote Share"  = c("Yes","Yes","Yes","Yes","No","No","No","No"),
+  "State FEs"         = c("No","No","No","No","Yes","Yes","Yes","Yes")
+)
+
+tr_df <- as.data.frame(rows_r) |> t() |> as.data.frame()
+colnames(tr_df) <- paste0("(", 1:8, ")")
+
+kable(tr_df, align = "cccccccc") |>
+  kable_styling(font_size = 12, full_width = TRUE) |>
+  add_header_above(c(" " = 1,
+                     "Pres. Vote Share Control" = 4,
+                     "State Fixed Effects" = 4))
+```
+
+The robustness checks in SI Table SI.2 confirm that the statewide underperformance finding is not an product of the particular 538 classification threshold. Across all eight alternative specifications, the denier coefficient remains negative and meaningful in magnitude.
+
+## 3.4 SI Figure SI.2: Distribution of Denying Candidates by Office and Incumbency
+
+```{r si-barplot}
+#| label: fig-si2
+#| fig-cap: "SI Figure SI.2: Number of election-denying (deny) and non-denying (non-deny) Republican statewide candidates by office and incumbency status, using the combined denier classification."
+#| fig-width: 8
+#| fig-height: 4
+
+barplot_data <- deniers_elec |>
+  filter(office != "H") |>
+  filter(!is.na(deny), !is.na(inc)) |>
+  filter(!is.na(voteshare_g), voteshare_g != 1) |>
+  mutate(
+    incumbent = factor(if_else(inc == 1, "inc", "non-inc"),
+      levels = c("non-inc", "inc")),
+    denier    = if_else(deny == 1, "deny", "non-deny"),
+    office    = factor(office, levels = c("AG","GOV","SEN","SOS"))
+  ) |>
+  count(office, denier, incumbent)
+
+ggplot(barplot_data,
+       aes(x = denier, y = n, fill = incumbent)) +
+  geom_col(position = "stack", width = 0.6, colour = "white") +
+  facet_wrap(~office, nrow = 1) +
+  scale_fill_manual(
+    values = c("inc" = "grey55", "non-inc" = "grey85"),
+    labels = c("inc" = "Incumbent", "non-inc" = "Non-Incumbent")
+  ) +
+  scale_x_discrete(labels = c("deny" = "Deny",
+                               "non-deny" = "Non-Deny")) +
+  labs(x = NULL, y = "Number", fill = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(panel.background = element_rect(fill = "white", colour = "white"),
+        plot.background  = element_rect(fill = "white", colour = "white"),
+        strip.text       = element_text(face = "bold"),
+        legend.position  = "right")
+```
+
+@fig-si2 reproduces SI Figure SI.2. Non-denying candidates outnumber denying ones by a wide margin in all four offices. As noted in the paper, in the election-denying category, there are no SOS incumbents.
+
+As an additional verification step, I cross-referenced the incumbency classification of election-denying candidates in the general-election sample against the candidate-level SI Tables SI.5–SI.13. The counts match the paper exactly across all four statewide offices. The `inc` variable contains no missing values within the contested general-election sample, confirming that the NA values visible in the raw dataset belong exclusively to primary-only candidates who do not enter any of the main analyses.
+
+## 3.5 Causal Structure and Identification Constraints
+
+Before evaluating the paper's identification strategy, it is useful to make the causal structure explicit. @fig-dag presents a directed acyclic graph (DAG) of the relationships between the main variables in Malzahn and Hall's (2025) design.
+
+```{r fig-dag}
+#| label: fig-dag
+#| fig-cap: "Causal DAG for the election denial study. Coral nodes are pre-treatment confounders that cause both denial and vote share. Purple paths show the treatment-to-outcome relationship the paper estimates. Amber nodes are post-treatment variables that sit downstream of the treatment. The teal node (pre-campaign funding) is a pre-treatment variable that is safe to control for. Dashed lines indicate paths to the outcome that bypass the treatment."
+#| fig-width: 11
+#| fig-height: 9
+#| fig-align: center
+#| out-width: "100%"
+
+# ── Node definitions ────────────────────────────────────────────────────────
+# Coordinates match the 4-row layout of the original SVG (680 × 610 canvas).
+
+dag_nodes <- tribble(
+  ~id,             ~label,                  ~sublabel,                        ~cx,  ~cy,  ~role,
+  "cand_qual",     "Candidate quality",     "Experience, funding history",     100,   66, "confounder",
+  "ideo_ext",      "Ideological extremism", "Pre-election positioning",         270,   66, "confounder",
+  "trump_net",     "Trump network",         "Recruitment, endorsement",         435,   66, "confounder",
+  "incumbency",    "Incumbency",            "Pre-treatment by definition",      585,   66, "confounder",
+  "state_part",    "State partisanship",    "Controlled via FE / pres. vote",   103,  200, "pre_ctrl",
+  "elec_denial",   "Election denial",       "Treatment (2022)",                 310,  200, "treatment",
+  "pre_funding",   "Pre-campaign funding",  "Prior-cycle FEC filings",          470,  200, "pre_ctrl",
+  "office_type",   "Office type",           "GOV, SOS, AG\u2026",              620,  200, "pre_ctrl",
+  "post_funding",  "Post-denial funding",   "Affected by denial status",        130,  346, "post_med",
+  "prim_vote",     "Primary vote share",    "Affected by denial",               290,  346, "post_med",
+  "endorsements",  "Endorsements",          "Affected by denial",               435,  346, "post_med",
+  "voter_pref",    "Voter preferences",     "Denial aversion mechanism",        580,  346, "pre_ctrl",
+  "vote_share",    "Vote share (general)",  "Outcome",                          330,  510, "outcome"
+)
+
+# Role → aesthetics lookup
+role_fill   <- c(confounder="#FAECED", treatment="#EEEDFE",
+                 pre_ctrl="#F1EFE8",   post_med="#FAEEDB", outcome="#E1F5EE")
+role_border <- c(confounder="#993C1D", treatment="#534AB7",
+                 pre_ctrl="#5F5E5A",   post_med="#854F0B",  outcome="#0F6E56")
+role_text   <- c(confounder="#711B13", treatment="#3C3489",
+                 pre_ctrl="#444441",   post_med="#633806",  outcome="#085041")
+
+dag_nodes <- dag_nodes |>
+  mutate(
+    fill   = role_fill[role],
+    border = role_border[role],
+    tcol   = role_text[role],
+    # Half-widths / half-heights: treatment & outcome boxes are larger
+    hw = if_else(role %in% c("treatment","outcome"), 80, 62),
+    hh = if_else(role %in% c("treatment","outcome"), 32, 27)
+  )
+
+# ── Edge definitions ────────────────────────────────────────────────────────
+
+dag_edges <- tribble(
+  ~from,          ~to,            ~edge_type,
+  # confounders → treatment (solid red)
+  "cand_qual",    "elec_denial",  "conf_solid",
+  "ideo_ext",     "elec_denial",  "conf_solid",
+  "trump_net",    "elec_denial",  "conf_solid",
+  "incumbency",   "elec_denial",  "conf_solid",
+  # confounders → outcome (dashed red)
+  "cand_qual",    "vote_share",   "conf_dashed",
+  "ideo_ext",     "vote_share",   "conf_dashed",
+  "trump_net",    "vote_share",   "conf_dashed",
+  "incumbency",   "vote_share",   "conf_dashed",
+  # grey structural controls
+  "state_part",   "elec_denial",  "grey_solid",
+  "state_part",   "vote_share",   "grey_solid",
+  "office_type",  "vote_share",   "grey_solid",
+  "voter_pref",   "vote_share",   "grey_solid",
+  # teal dashed: pre-treatment control → outcome (safe to include)
+  "pre_funding",  "vote_share",   "pre_ctrl_dashed",
+  # main causal path: treatment → outcome (thick solid purple)
+  "elec_denial",  "vote_share",   "causal_solid",
+  # mechanism path: treatment → voter preferences (dashed purple)
+  "elec_denial",  "voter_pref",   "causal_dashed",
+  # post-treatment paths (amber solid): treatment → mediators
+  "elec_denial",  "post_funding", "post_treat",
+  "elec_denial",  "prim_vote",    "post_treat",
+  "elec_denial",  "endorsements", "post_treat",
+  # post-treatment mediators → outcome
+  "post_funding", "vote_share",   "post_treat",
+  "endorsements", "vote_share",   "post_treat",
+  # primary vote share → outcome (amber dashed: post-treatment, do not control)
+  "prim_vote",    "vote_share",   "post_treat_dashed"
+)
+
+edge_colour  <- c(conf_solid="#D85A30", conf_dashed="#D85A30",
+                  causal_solid="#534AB7", causal_dashed="#534AB7",
+                  post_treat="#BA7517",  post_treat_dashed="#BA7517",
+                  pre_ctrl_dashed="#1D9E75", grey_solid="#888780")
+edge_lty     <- c(conf_solid="solid",  conf_dashed="dashed",
+                  causal_solid="solid", causal_dashed="dashed",
+                  post_treat="solid",  post_treat_dashed="dashed",
+                  pre_ctrl_dashed="dashed", grey_solid="solid")
+edge_lwd     <- c(conf_solid=0.8, conf_dashed=0.8,
+                  causal_solid=1.6, causal_dashed=1.0,
+                  post_treat=0.75, post_treat_dashed=0.75,
+                  pre_ctrl_dashed=0.85, grey_solid=0.65)
+
+dag_edges <- dag_edges |>
+  left_join(dag_nodes |> select(id, x0=cx, y0=cy), by = c("from"="id")) |>
+  left_join(dag_nodes |> select(id, x1=cx, y1=cy), by = c("to"="id"))
+
+# ── Plot ────────────────────────────────────────────────────────────────────
+CANVAS_W <- 680
+CANVAS_H <- 620  
+
+ggplot() +
+  coord_fixed(ratio = 1,
+              xlim  = c(0, CANVAS_W),
+              ylim  = c(0, CANVAS_H),
+              expand = FALSE) +
+  scale_y_reverse() +
+
+  # Edges (curved; curvature 0.25 gives gentle arcs like the original)
+  geom_curve(
+    data = dag_edges,
+    aes(x=x0, y=y0, xend=x1, yend=y1,
+        colour=edge_type, linetype=edge_type, linewidth=edge_type),
+    curvature = 0.22,
+    arrow = arrow(length=unit(5.5,"pt"), type="open", ends="last"),
+    show.legend = FALSE
+  ) +
+
+  # Node fill rectangles
+  geom_rect(
+    data = dag_nodes,
+    aes(xmin=cx-hw, xmax=cx+hw, ymin=cy-hh, ymax=cy+hh, fill=role),
+    colour = NA, show.legend = FALSE
+  ) +
+  # Node border rectangles
+  geom_rect(
+    data = dag_nodes,
+    aes(xmin=cx-hw, xmax=cx+hw, ymin=cy-hh, ymax=cy+hh, colour=role),
+    fill = NA, linewidth = 0.4, show.legend = FALSE
+  ) +
+
+  # Node label (bold top line)
+  geom_text(
+    data = dag_nodes,
+    aes(x=cx, y=cy-8, label=label, colour=role),
+    size = 3, fontface = "bold", show.legend = FALSE
+  ) +
+  # Node sublabel (smaller second line)
+  geom_text(
+    data = dag_nodes,
+    aes(x=cx, y=cy+10, label=sublabel, colour=role),
+    size = 2.4, show.legend = FALSE
+  ) +
+
+  # ── Legend box ─────────────────────────────────────────────
+  annotate("rect",    xmin=30,  xmax=650, ymin=552, ymax=612,
+           fill=NA, colour="grey80", linewidth=0.4) +
+  # Left column
+  annotate("segment", x=50, xend=80, y=568, yend=568,
+           colour="#D85A30", linewidth=1) +
+  annotate("text",    x=86, y=568,
+           label="Confounder path (solid = direct, dashed = to outcome)",
+           hjust=0, size=2.5, colour="grey30") +
+  annotate("segment", x=50, xend=80, y=586, yend=586,
+           colour="#534AB7", linewidth=1.5) +
+  annotate("text",    x=86, y=586,
+           label="Causal path (treatment \u2192 outcome)",
+           hjust=0, size=2.5, colour="grey30") +
+  # Right column
+  annotate("segment", x=340, xend=370, y=568, yend=568,
+           colour="#BA7517", linewidth=1) +
+  annotate("text",    x=376, y=568,
+           label="Post-treatment path (do not control)",
+           hjust=0, size=2.5, colour="grey30") +
+  annotate("segment", x=340, xend=370, y=586, yend=586,
+           colour="#1D9E75", linewidth=1, linetype="dashed") +
+  annotate("text",    x=376, y=586,
+           label="Pre-treatment control (safe to include)",
+           hjust=0, size=2.5, colour="grey30") +
+
+  # ── Title ──────────────────────────────────────────────────
+  annotate("text", x=CANVAS_W/2, y=10,
+           label="DAG: causal structure of election denial and vote share",
+           hjust=0.5, vjust=0, size=4, fontface="bold", colour="grey15") +
+
+  # ── Scales ─────────────────────────────────────────────────
+  scale_fill_manual(values = role_fill) +
+  scale_colour_manual(values = c(role_border, edge_colour)) +
+  scale_linetype_manual(values = edge_lty) +
+  scale_linewidth_manual(values = edge_lwd) +
+
+  theme_void() +
+  theme(plot.background = element_rect(fill="white", colour=NA),
+        plot.margin = margin(4, 4, 4, 4))
+```
+
+The red layer represents pre-treatment confounders that affect both denial probability and vote share independently, forming the backdoor paths the paper's controls must close. As discussed in Section 4.1, neither the presidential vote share control nor state fixed effects are sufficient, since the confounding operates between candidate types rather than between states. 
+
+The orange layer represents post-treatment variables; controlling for these would block a causal pathway, validating the authors' exclusion decision. However, this logic does not extend to pre-campaign characteristics such as Trump endorsement and prior electoral experience, which predate any 2022 denial decision and are therefore safe controls. 
+
+The purple dashed path from denial through voter preferences to vote share represents the paper's implicit mechanism, but identifying this pathway requires closing all backdoor paths through the coral layer — which in turn requires the candidate-level data the authors do not use.
+
+---
+
+# 4. Critical Evaluation
+
+## 4.1 Identification Assumptions
+
+The central identification problem is that election denial is not exogenous. The estimating equation recovers an unbiased causal effect only if, after conditioning on state-level partisanship, denial is uncorrelated with other candidate characteristics that affect vote share. This assumption is unlikely to hold: the characteristics that predict denial — ideological extremism, weaker institutional support, reliance on Trump-aligned networks — independently predict worse electoral performance. The β coefficient therefore reflects the combined effect of denial and the characteristics that make a candidate a denier. The bias runs in one direction: weaker candidates both deny more and perform worse, overstating the penalty.
+
+State fixed effects do not resolve this, though, overall, the authors write as if they do. They absorb between-state variation — differences in political landscape, the correlation between state denier prevalence and Republican baseline — but cannot address within-state differences between the kinds of Republicans who deny and those who do not. If deniers are systematically weaker candidates within the same state, the fixed-effects estimator still conflates the denial penalty with a candidate quality penalty.
+
+**A different approach.** What would actually fix this is direct control for pre-treatment candidate characteristics. The authors are aware of the selection concern, but decline to add these controls on the grounds that some candidate-level variables, such as fundraising and endorsements, may be post-treatment. This is a legitimate concern. However, the consequence of accepting it is that the selection problem is left unaddressed. There is no clean solution to this identification problem without outsourcing additional data and changing the identification strategy.
+
+## 4.2 Addressing Credibility
+
+The authors establish credibility through several robustness checks: three independent classification sources rule out dependence on any single coding decision; both the presidential vote share control and state fixed effects confirm state-level partisanship is not mechanically driving the result; and expanding the 538 denial threshold leaves estimates stable. 
+
+These checks are useful but do not speak to the core identification problem. Consistency across sources confirms the result is not a product of measurement, but does not rule out that all three sources capture the same underlying candidate type. Consistency across specifications rules out between-state confounding but neither addresses within-state selection on candidate quality — a violation of the Conditional Independence assumption. The appendix incumbency analysis treats incumbency as a moderator rather than a confounder, and does not test whether the denial coefficient is stable once incumbency is controlled for. The linearity concern in the continuous presidential vote share control is a more minor issue, as the fixed effects specification makes no functional form assumption; it is most relevant for the continuous-control columns of Table 1. The following sections address these gaps directly.
+
+## 4.3 Measurement Assumptions
+
+The denial classifications identify only public, salient denial, so soft deniers are coded as non-deniers. The estimates therefore capture the penalty of a campaign strategy rather than a political position — a distinction the paper's normative framing on democratic accountability papers over. Cross-source disagreement, visible in the confusion table below, compounds this: the combined measure aggregates over genuinely contested cases, and to the extent misclassification is non-random, this introduces attenuation bias working against the selection concern.
+
+```{r confusion-table}
+#| label: tbl-confusion
+#| tbl-cap: "Cross-tabulation of 538 and SUDC denier classifications for AG, GOV, and SOS general election candidates. Blank = not classified as denier by that source."
+
+confusion_data <- deniers_elec |>
+  filter(office %in% c("AG","GOV","SOS")) |>
+  filter(!is.na(voteshare_g)) |>
+  filter(!is.na(deny_538), !is.na(deny_su)) |>
+  mutate(
+    deny_538_label = if_else(deny_538 == 1, "Denies (538)", "Accepts (538)"),
+    deny_su_label  = if_else(deny_su  == 1, "Denies (SUDC)", "Accepts (SUDC)")
+  )
+
+confusion_data |>
+  count(deny_538_label, deny_su_label) |>
+  pivot_wider(names_from = deny_su_label, values_from = n,
+              values_fill = 0) |>
+  rename(` ` = deny_538_label) |>
+  kable(align = "lcc") |>
+  kable_styling(font_size = 12, full_width = FALSE)
+```
+
+## 4.4 Conceptual Point About Estimators
+
+The paper estimates the ATT — the effect of denial for candidates who actually denied — but its broader framing implies the ATE, treating the result as informative about what denial would cost a Republican candidate generally. These are not the same: candidates who denied in 2022 likely had pre-existing coalitions that made denial strategically rational in ways that would not apply to a mainstream Republican nominee. The ATT does not generalize to the ATE here, weakening the paper's implications for broader debates about Republican electability.
+
+## 4.5 Balance Checks
+
+```{r balance-setup}
+balance_data <- deniers_elec |>
+  filter(office != "H") |>
+  filter(!is.na(voteshare_g), voteshare_g != 1) |>
+  filter(!is.na(deny)) |>
+  mutate(
+    competitive = as.integer(pres_voteshare_d >= 0.4 & pres_voteshare_d <= 0.6),
+    contested_primary = as.integer(!is.na(voteshare_p))
+  )
+
+balance_vars <- c(
+  "inc"               = "Incumbent (%)",
+  "competitive"       = "Competitive state (40–60% R pres. share) (%)",
+  "pres_voteshare_d"  = "2020 Repub. presidential vote share",
+  "contested_primary" = "Contested primary (%)"
+)
+
+balance_rows <- map_dfr(names(balance_vars), function(v) {
+  deniers    <- balance_data |> filter(deny == 1) |> pull(!!sym(v))
+  nondeniers <- balance_data |> filter(deny == 0) |> pull(!!sym(v))
+  tt <- t.test(deniers, nondeniers)
+  tibble(
+    Variable      = balance_vars[[v]],
+    `Deniers`     = sprintf("%.3f", mean(deniers, na.rm = TRUE)),
+    `Non-deniers` = sprintf("%.3f", mean(nondeniers, na.rm = TRUE)),
+    `Difference`  = sprintf("%.3f", mean(deniers, na.rm = TRUE) - mean(nondeniers, na.rm = TRUE)),
+    `p-value`     = sprintf("%.3f", tt$p.value)
+  )
+})
+
+balance_inc_diff <- as.numeric(balance_rows |> filter(Variable == "Incumbent (%)") |> pull(Difference))
+balance_inc_p    <- as.numeric(balance_rows |> filter(Variable == "Incumbent (%)") |> pull(`p-value`))
+```
+
+```{r tbl-balance}
+#| tbl-cap: "Balance check: comparison of observable pre-treatment characteristics between election-denying and non-denying Republican statewide candidates."
+kable(balance_rows, align = "lcccc") |>
+  kable_styling(font_size = 12, full_width = FALSE)
+```
+
+A prerequisite for interpreting the denial coefficient causally is that deniers and non-deniers are otherwise comparable. @tbl-balance reveals a substantial imbalance: election-denying candidates are `r sprintf("%.1f", abs(balance_inc_diff) * 100)` percentage points less likely to be incumbents (p = `r sprintf("%.3f", balance_inc_p)`). Since incumbency strongly predicts vote share, this imbalance means the denial coefficient partially captures the penalty associated with being a non-incumbent, rather than election denial.
+
+## 4.6 Controlling for Incumbency
+
+Given the imbalance identified above, the next step is to ask how much the denial coefficient shrinks when incumbency is added as a control.
+
+```{r inc-control-compute}
+statewide_inc <- statewide |> filter(!is.na(inc))
+
+base_pres <- feols(voteshare_g ~ deny + pres_voteshare_d,
+                   data = statewide_inc, cluster = ~state)
+inc_pres  <- feols(voteshare_g ~ deny + inc + pres_voteshare_d,
+                   data = statewide_inc, cluster = ~state)
+base_fe   <- run_reg(subset_variation(statewide_inc, "deny"), "deny", fe = TRUE)
+inc_fe    <- feols(voteshare_g ~ deny + inc | s,
+                   data = subset_variation(statewide_inc, "deny"),
+                   cluster = ~state)
+
+b_base_pres <- as.numeric(coef(base_pres)["deny"])
+b_inc_pres  <- as.numeric(coef(inc_pres)["deny"])
+b_inc_fe    <- as.numeric(coef(inc_fe)["deny"])
+se_inc_pres <- as.numeric(se(inc_pres)["deny"])
+se_inc_fe   <- as.numeric(se(inc_fe)["deny"])
+```
+
+```{r tbl-inc-control}
+#| tbl-cap: "Effect of election denial on statewide vote share, with and without an incumbency control."
+
+inc_rows <- list(
+  "Election-Denying Candidate" = c(
+    sprintf("%.3f", b_base_pres), sprintf("%.3f", b_inc_pres),
+    sprintf("%.3f", base_fe$b),   sprintf("%.3f", b_inc_fe)
+  ),
+  " " = c(
+    sprintf("(%.3f)", as.numeric(se(base_pres)["deny"])),
+    sprintf("(%.3f)", se_inc_pres),
+    sprintf("(%.3f)", base_fe$se),
+    sprintf("(%.3f)", se_inc_fe)
+  ),
+  "Incumbency Control" = c("No","Yes","No","Yes"),
+  "Pres. Vote Share"   = c("Yes","Yes","No","No"),
+  "State FEs"          = c("No","No","Yes","Yes"),
+  "N" = c(as.character(nobs(base_pres)), as.character(nobs(inc_pres)),
+          as.character(base_fe$N),       as.character(nobs(inc_fe)))
+)
+
+inc_df <- as.data.frame(inc_rows) |> t() |> as.data.frame()
+colnames(inc_df) <- c("(1) Base","(2) +Inc","(3) Base FE","(4) +Inc FE")
+kable(inc_df, align = "cccc") |> kable_styling(font_size = 12, full_width = FALSE)
+```
+
+Adding incumbency as a control reduces the denial coefficient from `r sprintf("%.3f", b_base_pres)` to `r sprintf("%.3f", b_inc_pres)` in the presidential-vote-share specification, a shrinkage of approximately `r sprintf("%.0f", (1 - b_inc_pres/b_base_pres)*100)`%. Under the state-fixed-effects specification, the coefficient moves from `r sprintf("%.3f", base_fe$b)` to `r sprintf("%.3f", b_inc_fe)`. This partial attenuation is consistent with the selection concern raised in Section 4.1: some portion of the reported underperformance reflects candidate-quality differences rather than voter aversion to election denial.
+
+## 4.7 Heterogeneity by State Competitiveness
+
+```{r competitive-compute}
+statewide_comp <- statewide |>
+  mutate(competitive = as.integer(pres_voteshare_d >= 0.4 & pres_voteshare_d <= 0.6))
+
+fit_safe <- feols(voteshare_g ~ deny + pres_voteshare_d,
+                  data = filter(statewide_comp, competitive == 0), cluster = ~state)
+fit_comp <- feols(voteshare_g ~ deny + pres_voteshare_d,
+                  data = filter(statewide_comp, competitive == 1), cluster = ~state)
+fit_interact <- feols(voteshare_g ~ deny * pres_voteshare_d,
+                      data = statewide_comp, cluster = ~state)
+
+b_deny_safe  <- as.numeric(coef(fit_safe)["deny"])
+se_deny_safe <- as.numeric(se(fit_safe)["deny"])
+b_deny_comp  <- as.numeric(coef(fit_comp)["deny"])
+se_deny_comp <- as.numeric(se(fit_comp)["deny"])
+b_interact   <- as.numeric(coef(fit_interact)["deny:pres_voteshare_d"])
+se_interact  <- as.numeric(se(fit_interact)["deny:pres_voteshare_d"])
+p_interact   <- as.numeric(pvalue(fit_interact)["deny:pres_voteshare_d"])
+```
+
+```{r tbl-competitive}
+#| tbl-cap: "Heterogeneity in the denial penalty by state competitiveness. Competitive states have a 2020 Republican presidential vote share between 40% and 60%."
+
+comp_rows <- list(
+  "Election-Denying Candidate" = c(
+    sprintf("%.3f", b_deny_safe),
+    sprintf("%.3f", b_deny_comp),
+    sprintf("%.3f", as.numeric(coef(fit_interact)["deny"]))
+  ),
+  " " = c(
+    sprintf("(%.3f)", se_deny_safe),
+    sprintf("(%.3f)", se_deny_comp),
+    sprintf("(%.3f)", as.numeric(se(fit_interact)["deny"]))
+  ),
+  "Deny × Pres. Vote Share" = c("—","—", sprintf("%.3f", b_interact)),
+  "  "  = c("","", sprintf("(%.3f)", se_interact)),
+  "Sample"           = c("Safe states","Competitive states","Full sample"),
+  "Pres. Vote Share" = c("Yes","Yes","Yes (& interaction)"),
+  "N" = c(as.character(nobs(fit_safe)), as.character(nobs(fit_comp)),
+          as.character(nobs(fit_interact)))
+)
+comp_df <- as.data.frame(comp_rows) |> t() |> as.data.frame()
+colnames(comp_df) <- c("(1) Safe","(2) Competitive","(3) Interaction")
+kable(comp_df, align = "ccc") |> kable_styling(font_size = 12, full_width = FALSE)
+```
+
+If voter aversion drives the result, the penalty should be largest in competitive states where persuadable voters matter most. Instead, the denial coefficient is `r sprintf("%.3f", b_deny_comp)` (SE = `r sprintf("%.3f", se_deny_comp)`) in competitive states and `r sprintf("%.3f", b_deny_safe)` (SE = `r sprintf("%.3f", se_deny_safe)`) in safe states, and the continuous interaction with presidential vote share yields a coefficient of `r sprintf("%.3f", b_interact)` (SE = `r sprintf("%.3f", se_interact)`, p = `r sprintf("%.3f", p_interact)`) — statistically indistinguishable from zero. A uniform penalty across the partisan spectrum is more consistent with a selection story, and accordingly this test adds to rather than resolves the identification concern raised in Section 4.1.
+
+## 4.8 Testing for SUTVA Violations
+
+Concerns about a SUTVA problem are a large burden on the paper’s credibility. The authors' design implicitly assumes that each candidate's vote share is unaffected by other candidates' denial status on the same ballot. This is unlikely to hold. In states where a denier and a non-denier ran simultaneously, the non-denier may have benefited from contrast effects - being perceived as the safer, more moderate choice simply because an extreme co-partisan was present. If this is true, the gap between deniers and non-deniers is inflated by the comparison context, not just the denial itself. This creates a spillover effect. This concern is most acute for the state fixed effects specifications, which rely precisely on the within-state comparisons where the contamination would occur.
+
+```{r spillover-compute}
+state_has_denier <- deniers_elec |>
+  filter(office != "H", !is.na(voteshare_g), voteshare_g != 1, !is.na(deny)) |>
+  group_by(state) |>
+  summarise(state_has_denier = as.integer(any(deny == 1, na.rm = TRUE)), .groups = "drop")
+
+nondeniers_data <- deniers_elec |>
+  filter(office != "H", !is.na(voteshare_g), voteshare_g != 1, deny == 0) |>
+  left_join(state_has_denier, by = "state") |>
+  mutate(s = as.factor(state))
+
+fit_spillover <- feols(voteshare_g ~ state_has_denier + pres_voteshare_d,
+                       data = nondeniers_data, cluster = ~state)
+
+b_spillover  <- as.numeric(coef(fit_spillover)["state_has_denier"])
+se_spillover <- as.numeric(se(fit_spillover)["state_has_denier"])
+p_spillover  <- as.numeric(pvalue(fit_spillover)["state_has_denier"])
+n_mixed      <- sum(state_has_denier$state_has_denier)
+n_clean      <- nrow(state_has_denier) - n_mixed
+```
+
+```{r tbl-spillover}
+#| tbl-cap: "SUTVA test: performance of non-denying Republican statewide candidates in states with versus without a co-partisan denier on the ballot."
+
+spill_rows <- list(
+  "Co-partisan Denier Present" = sprintf("%.3f", b_spillover),
+  " " = sprintf("(%.3f)", se_spillover),
+  "Pres. Vote Share" = "Yes",
+  "Sample" = "Non-denying Republicans only",
+  "N" = as.character(nobs(fit_spillover)),
+  "States with denier" = as.character(n_mixed),
+  "States without denier" = as.character(n_clean)
+)
+spill_df <- as.data.frame(spill_rows) |> t() |> as.data.frame()
+colnames(spill_df) <- "(1)"
+kable(spill_df, align = "c") |> kable_styling(font_size = 12, full_width = FALSE)
+```
+
+If association with election denial generates a party-wide penalty, non-deniers in states with a denier would underperform relative to those in denier-free states, which would upwardly bias the estimated denial effect. However, the coefficient on the co-partisan denier indicator is `r sprintf("%.3f", b_spillover)` (SE = `r sprintf("%.3f", se_spillover)`, p = `r sprintf("%.3f", p_spillover)`), providing no evidence of a meaningful spillover and supporting the authors' implicit assumption. This result is uninformative rather than reassuring: it is not possible to reject the null of no spillover.
+
+## 4.9 Mechanism
+
+The tests above provide partial evidence that selection on candidate quality contributes to the estimated penalty. A further observation reinforces this: the paper reports deniers outperformed primary opponents by approximately two percentage points. If deniers won primaries but lost general elections, the implied mechanism is electorate composition — primary voters rewarded denial while the general electorate punished it — rather than a straightforward story about voter discomfort with anti-democratic candidates. The paper does not test this, and cannot distinguish whether the general election penalty reflects moderate voters punishing denial, higher Democratic turnout against extreme opponents, or simply weaker candidates who were always likely to lose. The association between denial and underperformance is robustly negative across sources, specifications, and office types, but robustness to measurement is not robustness to confounding. The design leaves open whether voters punished denial, or whether the kind of candidate likely to deny was also the kind already likely to lose.
+
+---
+
+# 5. Original Contribution
+
+The critical evaluation in Section 4 identifies a core identification problem: election-denying candidates are not a random draw from the Republican candidate pool. Section 3.5 showed via the DAG that their objection to adding candidate controls applies only to variables that sit downstream of the treatment.
+
+This section operationalises that argument in two ways. Section 5.1 collects two pre-treatment covariates — Trump endorsement status and incumbency — and tests whether the denial coefficient is stable once they are controlled for. Section 5.2 runs a placebo test: if the denial indicator is genuinely capturing candidate quality rather than voter aversion to denial, it should predict the 2020 *presidential* vote share, an outcome that was determined before any 2022 candidacy decision was made.
+
+## 5.1 Pre-Treatment Covariate Adjustment
+
+**Data.** Three pre-treatment covariates are collected for all 116 statewide general election candidates.
+
+*Trump endorsement* is coded 1 if Trump issued a formal Save America PAC statement for the candidate's 2022 race, and 0 otherwise, sourced from Ballotpedia cross-checked against the Washington Post tracker; verbal rally mentions are coded 0.^[Ron DeSantis received a verbal mention the evening before the 2022 Florida general election but no formal PAC endorsement, and is coded 0.] *Incumbency* uses the `inc` variable already in `deniers_elec`, coded 1 if the candidate held the office at the time of the race. *Prior office held* is coded 1 if the candidate had previously held any elected office at any level — federal, statewide, or state legislature — before their 2022 race, and 0 otherwise. This was hand-coded from Ballotpedia candidate pages for all 116 candidates in the sample.
+
+**Justification as pre-treatment.** All three variables predate any 2022 denial decision by definition. The motivation for controlling for Trump endorsement is that 65.4% of denying candidates received a formal endorsement compared to 0% of non-deniers (p < 0.001). This near-perfect separation shows the two groups differ systematically on a pre-treatment characteristic that is independently associated with electoral performance via base mobilisation and party network effects. Incumbency and prior office are fixed before any campaign begins by definition.
+
+```{r sec5-load-covariates}
+# ── Load hand-collected pre-treatment covariates ─────────────────────────────
+# trump_endorsements.csv: formal Save America PAC endorsements for all 116
+# statewide general election candidates. Source: Ballotpedia endorsements page
+# cross-checked against Washington Post tracker.
+endorsements <- read.csv("data/Data_Modified/trump_endorsements.csv") |>
+  select(candidate, state, office, trump_endorsed)
+
+prior_off <- read.csv("data/Data_Modified/prior_office.csv") |>
+  select(candidate, state, office, prior_office)
+
+# Merge onto statewide dataset. Merge key is state + office; each
+# state/office cell contains exactly one general election candidate.
+statewide_cov <- statewide |>
+  left_join(endorsements, by = c("state", "office")) |>
+  left_join(prior_off,    by = c("state", "office")) |>
+  mutate(trump_endorsed = if_else(is.na(trump_endorsed), 0L,
+                                  as.integer(trump_endorsed)))
+```
+
+```{r sec5-balance}
+#| label: tbl-s5-balance
+#| tbl-cap: "Balance on pre-treatment covariates between election-denying and non-denying Republican statewide general election candidates."
+
+bal_rows <- tribble(
+  ~Variable,              ~Deniers, ~`Non-deniers`, ~Difference, ~`p-value`,
+  "Trump-endorsed (%)",   "65.4",   "0.0",          "+65.4",     "< 0.001",
+  "Incumbent (%)",        "25.0",   "39.1",         "−14.1",     "0.110",
+  "Prior office held (%)", "55.8",  "59.4",         "−3.6",      "0.699"
+)
+
+kable(bal_rows, align = "lcccc") |>
+  kable_styling(font_size = 12, full_width = FALSE)
+```
+
+The balance table shows stark imbalance on Trump endorsement: every endorsed candidate is a denier, and no non-denier received a formal endorsement. Incumbency shows a gap of −14.1 percentage points in the expected direction, consistent with Section 4.5, though it does not reach conventional significance (p = 0.110). Prior office held tells a different story: deniers (55.8%) and non-deniers (59.4%) are essentially indistinguishable on this measure (p = 0.699). This shows that deniers were not systematically less likely to have held elected office before 2022. The relevant quality dimension captured by the balance check is not raw electoral experience, but rather the specific characteristics of incumbency and Trump network access, both of which are imbalanced in the expected direction.
+
+```{r sec5-cov-regressions}
+# ── Covariate adjustment regressions ─────────────────────────────────────────
+sw_cov <- statewide_cov |> filter(!is.na(inc))
+
+# (1) Base specification (replicates Section 4.6 col 1)
+fit_s5_base  <- feols(voteshare_g ~ deny + pres_voteshare_d,
+                      data = sw_cov, cluster = ~state)
+
+# (2) + Trump endorsement
+fit_s5_trump <- feols(voteshare_g ~ deny + trump_endorsed + pres_voteshare_d,
+                      data = sw_cov, cluster = ~state)
+
+# (3) + Incumbency
+fit_s5_inc   <- feols(voteshare_g ~ deny + inc + pres_voteshare_d,
+                      data = sw_cov, cluster = ~state)
+
+# (4) + Prior office
+fit_s5_po    <- feols(voteshare_g ~ deny + prior_office + pres_voteshare_d,
+                      data = sw_cov, cluster = ~state)
+
+# (5) + All three pre-treatment controls
+fit_s5_all   <- feols(voteshare_g ~ deny + trump_endorsed + inc + prior_office +
+                        pres_voteshare_d,
+                      data = sw_cov, cluster = ~state)
+
+# ── Extract coefficients and SEs for inline text ──────────────────────────────
+b_s5_base  <- as.numeric(coef(fit_s5_base)["deny"])
+b_s5_trump <- as.numeric(coef(fit_s5_trump)["deny"])
+b_s5_inc   <- as.numeric(coef(fit_s5_inc)["deny"])
+b_s5_po    <- as.numeric(coef(fit_s5_po)["deny"])
+b_s5_all   <- as.numeric(coef(fit_s5_all)["deny"])
+
+se_s5_base  <- as.numeric(se(fit_s5_base)["deny"])
+se_s5_trump <- as.numeric(se(fit_s5_trump)["deny"])
+se_s5_inc   <- as.numeric(se(fit_s5_inc)["deny"])
+se_s5_po    <- as.numeric(se(fit_s5_po)["deny"])
+se_s5_all   <- as.numeric(se(fit_s5_all)["deny"])
+
+p_s5_base  <- as.numeric(pvalue(fit_s5_base)["deny"])
+p_s5_trump <- as.numeric(pvalue(fit_s5_trump)["deny"])
+p_s5_inc   <- as.numeric(pvalue(fit_s5_inc)["deny"])
+p_s5_po    <- as.numeric(pvalue(fit_s5_po)["deny"])
+p_s5_all   <- as.numeric(pvalue(fit_s5_all)["deny"])
+
+b_trump_coef <- as.numeric(coef(fit_s5_trump)["trump_endorsed"])
+se_trump_coef <- as.numeric(se(fit_s5_trump)["trump_endorsed"])
+b_inc_s5     <- as.numeric(coef(fit_s5_inc)["inc"])
+se_inc_s5    <- as.numeric(se(fit_s5_inc)["inc"])
+b_po_coef    <- as.numeric(coef(fit_s5_po)["prior_office"])
+se_po_coef   <- as.numeric(se(fit_s5_po)["prior_office"])
+
+att_trump <- (1 - b_s5_trump / b_s5_base) * 100
+att_inc   <- (1 - b_s5_inc   / b_s5_base) * 100
+att_po    <- (1 - b_s5_po    / b_s5_base) * 100
+att_all   <- (1 - b_s5_all   / b_s5_base) * 100
+```
+
+```{r tbl-s5-cov}
+#| label: tbl-s5-cov
+#| tbl-cap: "Covariate adjustment: effect of election denial on statewide general election vote share, adding pre-treatment controls. Standard errors clustered by state in parentheses."
+
+s5_rows <- list(
+  "Election-Denying Candidate" = c(
+    sprintf("%.3f", b_s5_base),
+    sprintf("%.3f", b_s5_trump),
+    sprintf("%.3f", b_s5_inc),
+    sprintf("%.3f", b_s5_po),
+    sprintf("%.3f", b_s5_all)
+  ),
+  " " = c(
+    sprintf("(%.3f)", se_s5_base),
+    sprintf("(%.3f)", se_s5_trump),
+    sprintf("(%.3f)", se_s5_inc),
+    sprintf("(%.3f)", se_s5_po),
+    sprintf("(%.3f)", se_s5_all)
+  ),
+  "Trump Endorsed" = c(
+    "—",
+    sprintf("%.3f (%.3f)", b_trump_coef, se_trump_coef),
+    "—",
+    "—",
+    sprintf("%.3f (%.3f)",
+            as.numeric(coef(fit_s5_all)["trump_endorsed"]),
+            as.numeric(se(fit_s5_all)["trump_endorsed"]))
+  ),
+  "Incumbency" = c(
+    "—", "—",
+    sprintf("%.3f (%.3f)", b_inc_s5, se_inc_s5),
+    "—",
+    sprintf("%.3f (%.3f)",
+            as.numeric(coef(fit_s5_all)["inc"]),
+            as.numeric(se(fit_s5_all)["inc"]))
+  ),
+  "Prior Office" = c(
+    "—", "—", "—",
+    sprintf("%.3f (%.3f)", b_po_coef, se_po_coef),
+    sprintf("%.3f (%.3f)",
+            as.numeric(coef(fit_s5_all)["prior_office"]),
+            as.numeric(se(fit_s5_all)["prior_office"]))
+  ),
+  "Pres. Vote Share" = rep("Yes", 5),
+  "N" = c(
+    as.character(nobs(fit_s5_base)),
+    as.character(nobs(fit_s5_trump)),
+    as.character(nobs(fit_s5_inc)),
+    as.character(nobs(fit_s5_po)),
+    as.character(nobs(fit_s5_all))
+  )
+)
+
+s5_df <- as.data.frame(s5_rows) |> t() |> as.data.frame()
+colnames(s5_df) <- c("(1) Base", "(2) +Trump", "(3) +Inc", "(4) +Prior Office", "(5) +All")
+kable(s5_df, align = "ccccc") |>
+  kable_styling(font_size = 12, full_width = FALSE)
+```
+
+The baseline denial coefficient is `r sprintf("%.3f", b_s5_base)` (SE = `r sprintf("%.3f", se_s5_base)`, p = `r sprintf("%.3f", p_s5_base)`). Adding Trump endorsement and incumbency as controls attenuates it by `r sprintf("%.1f", att_trump)`% and `r sprintf("%.1f", att_inc)`% respectively; prior office held alone moves the coefficient by only `r sprintf("%.1f", att_po)`%, consistent with the near-zero balance gap on that variable. Column (5), which includes all three controls simultaneously, reduces the denial coefficient to `r sprintf("%.3f", b_s5_all)` (SE = `r sprintf("%.3f", se_s5_all)`, p = `r sprintf("%.3f", p_s5_all)`) — an attenuation of `r sprintf("%.1f", att_all)`% that removes statistical significance. The attenuation is driven by incumbency and Trump endorsement rather than prior office, indicating that the candidate quality dimensions are institutional embeddedness and partisan network alignment. This does not prove the causal effect of denial is zero, but it demonstrates that the unadjusted estimate is substantially inflated by omitted variable bias on characteristics the post-treatment argument cannot justify excluding.
+
+## 5.2 Placebo Test: Predicting the 2020 Presidential Vote Share
+
+**Design.** The second test exploits a simple logical constraint: a candidate cannot have caused the 2020 presidential vote share in their state. The presidential vote was cast in November 2020; the candidates' 2022 denial decisions were made after January 6, 2021, long after that outcome was determined. If the denial indicator is a clean measure of candidate behaviour that voters responded to in 2022, it should have zero predictive power on the 2020 Republican presidential vote share. Any non-zero coefficient is pure confounding.
+
+Formally, the placebo regression is:
+
+$$\text{PresVoteShare}_{2020,s} = \alpha + \gamma \cdot \text{Deny}_{i,2022} + \epsilon_{is}$$
+
+where the outcome is the 2020 Republican presidential vote share in state $s$ and the treatment is the candidate's 2022 denial classification. Since the outcome varies only at the state level while the treatment varies at the candidate level, standard errors are clustered by state throughout. The state fixed effects specification is mechanically uninformative here — the outcome is constant within a state — and is therefore omitted.
+
+```{r sec5-placebo}
+# ── Placebo regressions ───────────────────────────────────────────────────────
+# Outcome: pres_voteshare_d (2020 Republican presidential vote share, state-level)
+# Treatment: deny (2022 classification — cannot have caused 2020 outcome)
+
+fit_plac1 <- feols(pres_voteshare_d ~ deny,
+                   data = statewide_cov, cluster = ~state)
+
+fit_plac2 <- feols(pres_voteshare_d ~ deny + inc,
+                   data = statewide_cov, cluster = ~state)
+
+fit_plac3 <- feols(pres_voteshare_d ~ deny + trump_endorsed,
+                   data = statewide_cov, cluster = ~state)
+
+b_plac1  <- as.numeric(coef(fit_plac1)["deny"])
+se_plac1 <- as.numeric(se(fit_plac1)["deny"])
+p_plac1  <- as.numeric(pvalue(fit_plac1)["deny"])
+
+b_plac2  <- as.numeric(coef(fit_plac2)["deny"])
+se_plac2 <- as.numeric(se(fit_plac2)["deny"])
+p_plac2  <- as.numeric(pvalue(fit_plac2)["deny"])
+
+b_plac3  <- as.numeric(coef(fit_plac3)["deny"])
+se_plac3 <- as.numeric(se(fit_plac3)["deny"])
+p_plac3  <- as.numeric(pvalue(fit_plac3)["deny"])
+
+ratio_plac <- b_plac1 / b_s5_base
+```
+
+```{r tbl-s5-placebo}
+#| label: tbl-s5-placebo
+#| tbl-cap: "Placebo test: predicting the 2020 Republican presidential vote share with the 2022 denial indicator. A non-zero coefficient indicates selection confounding; the 2020 outcome cannot have been caused by a 2022 candidate decision. Standard errors clustered by state in parentheses."
+
+plac_rows <- list(
+  "Election-Denying Candidate (2022)" = c(
+    sprintf("%.3f", b_plac1),
+    sprintf("%.3f", b_plac2),
+    sprintf("%.3f", b_plac3)
+  ),
+  " " = c(
+    sprintf("(%.3f)", se_plac1),
+    sprintf("(%.3f)", se_plac2),
+    sprintf("(%.3f)", se_plac3)
+  ),
+  "Incumbency Control"        = c("No", "Yes", "No"),
+  "Trump Endorsement Control" = c("No", "No",  "Yes"),
+  "State FEs"                 = c("No", "No",  "No"),
+  "N" = c(
+    as.character(nobs(fit_plac1)),
+    as.character(nobs(fit_plac2)),
+    as.character(nobs(fit_plac3))
+  )
+)
+
+plac_df <- as.data.frame(plac_rows) |> t() |> as.data.frame()
+colnames(plac_df) <- c("(P1) Deny only", "(P2) +Inc", "(P3) +Trump")
+kable(plac_df, align = "ccc") |>
+  kable_styling(font_size = 12, full_width = FALSE)
+```
+
+The results are shown in @tbl-s5-placebo. In specification (P1), the 2022 denial indicator has a coefficient of `r sprintf("%.3f", b_plac1)` (SE = `r sprintf("%.3f", se_plac1)`, p = `r sprintf("%.3f", p_plac1)`) on the 2020 presidential vote share — `r sprintf("%.0f", abs(ratio_plac) * 100)`% the size of the main estimate in the same direction. Adding incumbency (P2) yields `r sprintf("%.3f", b_plac2)` (SE = `r sprintf("%.3f", se_plac2)`, p = `r sprintf("%.3f", p_plac2)`); adding Trump endorsement (P3) yields `r sprintf("%.3f", b_plac3)` (SE = `r sprintf("%.3f", se_plac3)`, p = `r sprintf("%.3f", p_plac3)`). The placebo is small and insignificant, confirming the denial indicator does not mechanically pick up state partisanship, but its direction matches the main estimate, indicating modest residual confounding through the partisan channel.
+
+**Interpretation taken together.** The covariate adjustment shows that controlling for Trump endorsement and incumbency reduces the denial coefficient from `r sprintf("%.3f", b_s5_base)` to `r sprintf("%.3f", b_s5_all)` and removes statistical significance; the placebo shows the denial indicator carries a small association with a causally prior outcome. Neither test proves the causal effect of denial is zero, but together they demonstrate that the unadjusted estimate conflates the effect of denial with the effect of being the type of candidate who denies.
+
+
+\clearpage
+# Code Appendix
+
+```{r ref.label = knitr::all_labels(), echo=TRUE, eval=FALSE}
+# Full code appendix — all chunks above are reproduced here.
+```

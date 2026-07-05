@@ -1,0 +1,443 @@
+---
+title: "Problem Set 2: Selection on Observables"
+subtitle: "MY457 | WT 2026 | Week 4"
+number-sections: true
+format:
+  pdf:
+    toc: false
+    include-in-header:
+      text: |
+        \setkomafont{disposition}{\normalfont\bfseries}
+        \setkomafont{section}{\normalfont\Large\bfseries}
+        \setkomafont{subsection}{\normalfont\normalsize}
+---
+
+
+```{r setup, include = FALSE}
+# this chunk contains code that sets global options for the entire .qmd.
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, linewidth = 60, echo = T)
+
+# you can include your libraries here:
+library(tidyverse)
+library(here)
+library(knitr)
+library(estimatr)
+library(broom)
+library(modelsummary)
+library(haven)
+library(ggdag)
+library(MatchIt)
+library(cobalt)
+```
+
+
+Add your answers to this .qmd file by replacing the dedicated placeholder text. When you are finished, render the .qmd file as a .pdf and make sure you push your work to GitHub.
+
+
+# Concepts
+
+
+## A researcher wants to estimate the effect of electoral gender quotas on women's representation. Their unit of analysis is parties. Their treatment variable is a binary indicator for whether a party adopted a gender quota or not. They decide to condition on party ideology (left, center, right). Assuming that the conditional independence assumption holds, what other issue might they face when using selection on observables to estimate the treatment effect? A stylised version of their data is shown in @tbl-stylised_dataset:
+
+| Party | Ideology (X)  | Quota (D) | Share of female Candidates (Y) |
+|-------|---------------|-----------|--------------------------------|
+| A     | Left          | 1         | 0.45                           |
+| B     | Center        | 1         | 0.30                           |
+| C     | Right         | 0         | 0.20                           |
+| D     | Left          | 1         | 0.55                           |
+| E     | Center        | 0         | 0.28                           |
+| F     | Right         | 0         | 0.50                           |
+
+: Stylised Dataset {#tbl-stylised_dataset}
+
+1. Selection on observables requires that there are untreated and treated variables for each of the parties. However, only the the Center party fits this description; all the observations for the Left party are treated, whereas none of the observations for the Right party are treated. Without overlap, it is not possible to estimate counterfactuals within some ideology groups, and we cannot compare Left and Right treated and untreated observations. This suggests that quota adoption may be structurally determined by ideology, in which case the effect of quotas cannot be separated from the effect of ideology.
+
+## Which estimand(s) could the researchers identify? 
+
+It is possible to calculate the ATE and the ATT for the Center party, but because of the overlap problem, these statistics cannot be calculated for the Left and Right parties. The overall ATE and ATT cannot be calculated for the same reason.
+
+## Explain the notation $(Y_1, Y_0) \perp D | X$. Does this mean that $(Y_1, Y_0) \perp X$?
+
+
+$(Y_1, Y_0) \perp D | X$ means that the potential outcomes $Y_1$ and $Y_0$ are independent of the treatment $D$ given some covariate $X$. This is the Conditional Independence Assumption. However, this does not imply that $(Y_1, Y_0) \perp X$. Instead, the second statement maintains that the potential outcomes of the covariate will be the same at all levels, regardless of whether treatment is applied.
+
+
+## Consider the causal graph below. List all paths between D and Y. 
+```{r}
+#| label: fig-dag
+#| fig-cap: "Causal Graph"
+
+dag1 <- dagify(
+    Y ~ D + X + M + P,
+    D ~ X + Q,
+    M ~ D,
+    X ~ Q,
+    R ~ D,
+    R ~ Y,
+    P ~ Q,
+    exposure = "D",
+    outcome = "Y",
+    coords = data.frame(
+        name = c("D", "Y", "X", "M", "Q", "P", "R"),
+        x = c(0, 4, 1, 2, 3, 4, 2),
+        y = c(0, 0, 2, -2, 2, 2, -1)
+    )
+)
+
+ggdag1 <- ggdag(dag1) +
+    theme_dag()
+ggdag1
+```
+
+Directed Paths:
+D -> Y
+D -> M -> Y
+
+Backdoor Paths:
+D <- X -> Y
+D <- Q -> X -> Y
+D <- Q -> P -> Y
+
+Confounding Paths:
+D <- R -> Y
+
+## Define a conditioning set that is sufficient to identify the effect of $D$ on $Y$. Explain your answer.
+
+{Q} is a valid conditioning set to identify the effect of $D$ on $Y$. Since $Q$ is the root cause of $X$, $P$, and $D$, controlling for $Q$ blocks all open backdoor paths. 
+
+$M$ and $R$ should not be controlled for. $M$ is a mediator; controlling for it would block the causal effect. Controlling for $R$ would introduce collider bias since $R$ is a post-treatment collider.
+
+# Simulation
+
+## Suppose the government wants to implement an intensive course $D$, designed for recently unemployed people to help them get back into the job market and improve their salaries ($Y$). As the resident data scientist you argued for $D$ to be randomized, but unfortunately you were overruled by your seniors who raised ethical concerns. They do, however, let you measure two covariates, $X1$ and $X2$. Below we simulate a dataset that contains all relevant variables. This also includes two unobserved variables $U1$ and $U2$ that naturally wouldn't be contained in your dataset were this real data. Draw a DAG that represents the data generating process. Helpful packages for drawing and visualising DAGs include `dagitty` and `ggdag`.
+
+```{r, echo = TRUE, include = TRUE} 
+set.seed(123)
+n_obs <- 10000
+tau <- 25000
+
+# Create the dataset
+sim_data <- tibble(
+    U1 = rbinom(n_obs, 1, 0.5),
+    U2 = rbinom(n_obs, 1, 0.5),
+    X2 = sample(1:50, n_obs, replace = TRUE),
+    X1 = 10 + 1500 * U1 + 1500 * U2 + rnorm(n_obs, mean = 0, sd = 100),
+    Y0 = 20000 + 1000 * X2 + 1500 * U2 + rnorm(n_obs, mean = 0, sd = 1000),
+    Y1 = Y0 + tau,
+    prob_d = pmin(pnorm(X2, mean = 50, sd = 25) + 0.5 * U1, 1),
+    D = rbinom(n_obs, 1, prob_d),
+    Y = ifelse(D == 1, Y1, Y0)
+)
+```
+
+
+```{r}
+dag2 <- dagify(
+  D ~ X2 + U1,
+  Y ~ D + X2 + U2,
+  X1 ~ U1 + U2,
+  exposure = "D",
+  outcome = "Y"
+)
+
+ggdag2 <- ggdag(dag2) +
+    theme_dag()
+ggdag2
+
+```
+
+## Based on your DAG, which variables would you need to control for to estimate the effect of $D$ on $Y$? Briefly justify your answer.
+
+The following paths from $D$ to $Y$ are available:
+
+D -> Y
+D <- X2 -> Y
+D <- U1 -> X1 <- U2 -> Y
+
+The first path provides us with no help, while he third path is already blocked by a collider, $X1$. In the second path, $X2$ is a confounder that must be controlled for. Therefore, to estimate the effect of $D$ on $Y$, we need only control for $X2$.
+
+## Generate a clear and compelling visualisation that shows the distribution of just $Y_0$, split by treatment status. Do you think we can assume that $(Y_1, Y_0) \perp D$?
+
+```{r}
+sim_data %>%
+  ggplot(aes(x = Y0, fill = factor(D))) +
+  geom_density(alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Distribution of Y0 by Treatment Status", 
+  x = "Y0", 
+  y = "Density", 
+  fill = "D")
+```
+
+Based on the graph, we cannot assume that $(Y_1, Y_0) \perp D$ because treated individuals have systematically higher baseline potential outcomes.
+
+## Check for balance in the covariates $X1$ and $X2$. What do you find?
+
+```{r}
+bal.tab(D ~ X1 + X2, data = sim_data)
+
+```
+
+From the balance test above, we can see that both $X1$ and $X2$ are strongly imbalanced. This validates the earlier claim that $(Y_1, Y_0) \perp D$ is likely not accurate and that treatment is clearly selective. 
+
+## Imagine you only had access to the observed data and didn't know anything about the data generating process. Based on the results of the balance tests, would you feel confident to identify a conditioning set that would allow you to estimate the ATE without bias? Why or why not?
+
+Without knowing the data generation process, I would not be confident in identifying a data generation process for estimating the ATE using the tests I have conducted. A balance test and graphing the distributions of Y0 only tell the reader when unconditional independence fails, not whether adjustment is sufficient. I would need knowledge of the causal structure to make this judgement.
+
+## As the resident data scientist you are faced with the task of estimating the effect of the course ($D$) on observed salaries ($Y$). First, naïvely estimate the ATE using a linear regression and display the results in a regression table showing the coefficients and 99.9% confidence intervals. How well does the estimated ATE match the true ATE? 
+
+```{r}
+naive_model <- lm_robust(Y ~ D, data = sim_data)
+
+library(modelsummary)
+
+modelsummary(
+  naive_model,
+  statistic = "conf.int",
+  conf_level = 0.999
+)
+
+```
+
+The estimated ATE does not match the true ATE well. The true ATE was defined as 25,000, but the estimate from the regression is 33,405.941. The 99% confidence interval does not contain this value. The difference of ~8,000, plus the non-inclusion in the confidence interval, indicates that the naive estimator is biased.
+
+## Estimate two more linear regressions: one that includes $X2$ as a control and one that includes $X2$ and $X1$ as controls. Display all three regression results in a single table showing the coefficients and 99.9% confidence intervals. Which estimator yields an unbiased estimate of the estimand (ATE)? Which estimator(s) are biased?
+
+```{r}
+m2 <- lm_robust(Y ~ D + X2, data = sim_data)
+
+m3 <- lm_robust(Y ~ D + X2 + X1, data = sim_data)
+
+library(modelsummary)
+modelsummary(
+    list("Naïve" = naive_model,
+       "Control: X2" = m2,
+       "Control: X2 + X1" = m3),
+  statistic = "conf.int",
+  conf_level = 0.999
+)
+
+```
+
+The estimator including $X2$ but not incuding $X1$ gives the most unbiased estimator of the estimand, as it is closest to 25,000. However, both are an improvement on the naive estimator.
+
+# Replication
+
+In this section, we will use real-world data to reinforce what we have learned. We will analyse the dataset employed in *[Dollars on the Sidewalk: Should U.S. Presidential Candidates Advertise in Uncontested States?](https://onlinelibrary.wiley.com/doi/epdf/10.1111/ajps.12073)*. 
+
+In the USA, political parties spend over 750 million dollars on television adverts during campaigns. However, because of the nature of the US political system, many parties only advertise in states they deem competitive. Yet, beyond votes, advertising might also increase the amount of financial contributions people make to political campaigns. The authors study whether ads lead to greater levels of contributions to campaigns. To do this, they consider areas in non-competitive states that are exposed to 'spillover' ads from bordering competitive states as treated units, and areas in non-competitive states that are not exposed to these ads as control units. 
+
+## Skim the paper and fill out the table below to provide a summary of the paper's research design. Be as precise and concise as possible. Edit the table directly in your .qmd to provide your answers.
+
+| Category                | Description                                |
+|-------------------------|--------------------------------------------|
+| Main Hypothesis         |   Exposure to presidential campaign television       advertisements increases the amount of financial contributions to political campaigns, even in areas where candidates are not actively campaigning.                                         |
+| Unit of Analysis        |   Media markets (Designated Market Areas, DMAs), specifically counties within non-competitive states that may or may not receive spillover advertising from adjacent competitive-state DMAs.                                         |
+| Treatment               |   Exposure to spillover presidential campaign television advertisements originating from competitive states but reaching adjacent areas in non-competitive states via shared media markets.                                         |
+| Outcome                 |   Amount of financial contributions to presidential campaigns from individuals, measured as total contribution dollars in a given geographic area and time period.                                         |
+| Identification Strategy |   Geographic spillover quasi-experiment exploiting variation in exposure to ads driven by media market boundaries that cross state borders. The design compares contribution levels in similar non-competitive-state areas that do and do not receive spillover ads, controlling for fixed effects and other covariates.                                         |
+| Estimand                |    Average Treatment Effect (ATE) of exposure to campaign advertising on political contributions in spillover areas, particularly the causal effect of ad exposure on contribution amounts among otherwise similar non-competitive-state units.                                        |
+
+
+## Why can't the authors just compare campaign contributions between zip codes in non-competitive states that are exposed to spillover ads and those that are not? 
+
+The authors can't use this method of analysis because exposure to spillover ads is not randomly assigned. A comparison simplu between zip codes that receive spillover ads and those that do not would likely yield a biased estimate. Exposed and unexposed zip codes may differ on other ways thataffect contributions, such as income, population, edcuation, and political engagement.
+
+## Which variables are in the conditioning set that the authors use to estimate the propensity score? Is there a variable you would have added to the conditioning set that the authors didn't include? Justify your answer.
+
+The authors use the following variables as part of the conditioning set: population size, income measures, education levels, past political contributions, partisanship / political preferences, demographic composition, media market characteristics, and state / geographic characteristics. All of these variables help the authors to determine the probability of receiving spillover ad exposure.
+
+If I had to add an additional variable, it might be helpful to add distance to the nearest competitive state. Since treatment assignment is largely determined by geographic location, and distance may affect political contribution, this could be an insightful variable. Without it, the study could risk confounding if distance affects both tratment and contributions.
+
+## Read into `R` the replication data file `dollars_on_the_sidewalk.dta` and assign it to an object called `data`. These data are at the zip code level, and include data from both competitive states and non-competitive states, indicated by the dummy variable `NonComp` which takes a value of 1 if non-competitive. For only those zip codes in non-competitive states, define a binary treatment variable (`D`) based on whether the zip code received more than 1,000 ads (`TotAds`). Remove rows that contain missing values on any of the variables in the dataset. How many units are in the treated group, and how many are in the control group? 
+
+
+```{r}
+data <- read_dta("data/dollars_on_the_sidewalk.dta")
+
+data_nc = data %>%
+    filter(NonComp == 1) %>%
+    mutate(D = ifelse(TotAds > 1000, 1, 0))
+
+data_nc <- data_nc %>%
+  na.omit()
+
+table(data_nc$D)
+```
+
+There are 11165 units in the control group and 6237 in the treatment group.
+
+## What is the mean campaign contribution (`Cont`) for each level of `D`? Estimate the naïve difference-in-means using these two quantities.
+
+```{r}
+data_nc %>%
+  group_by(D) %>%
+  summarise(mean_cont = mean(Cont))
+
+# calculate naive difference in means
+means <- data_nc %>%
+  group_by(D) %>%
+  summarise(mean_cont = mean(Cont))
+
+naive_diff <- means$mean_cont[means$D == 1] - means$mean_cont[means$D == 0]
+naive_diff
+
+```
+
+See the output for answers.
+
+## The authors use propensity score matching to estimate the ATT. Using the authors' conditioning set, fit a logistic regression to estimate the propensity score for each unit in the data. (Hint: Use `family = binomial(link = "logit")` in the `glm` function. To predict probabilities, use `predict()` but remember to set `type = "response"`.) Note that the authors include the following covariates in their conditioning set: `Inc`, `PercentHispanic`,  `PercentBlack`, `per_collegegrads`, `density`, `State`. Add the propensity scores to your dataset as a new variable called `p_score`.
+
+
+```{r}
+ps_reg <- glm(
+    D ~ Inc + PercentHispanic + PercentBlack + per_collegegrads + density + State, 
+    data = data_nc,
+    family = binomial(link = "logit")
+)
+
+data_nc$p_score <- predict(ps_reg, type = "response")
+summary(data_nc$p_score)
+
+```
+
+## In a single well-formatted and compelling visualisation, show the propensity score distributions for the two groups. Based on the plot, which estimand can we identify? 
+
+
+```{r}
+ggplot(data_nc, aes(x = p_score, fill = factor(D))) +
+  geom_density(alpha = 0.4) +
+  labs(
+    title = "Propensity Score Distributions by Treatment Status",
+    x = "Propensity Score",
+    y = "Density",
+    fill = "Treatment Status"
+  ) +
+  scale_fill_manual(
+    labels = c("Control (D = 0)", "Treated (D = 1)"),
+    values = c("#1f77b4", "#d62728")
+  ) +
+  theme_minimal(base_size = 14)
+
+```
+
+The plot shows limited but sufficient overlap to identify the ATT, but insufficient overlap to reliably identify the ATE due to lack of common support at high propensity scores.
+
+## The code below uses the `MatchIt` package to perform nearest neighbour matching without replacement (1:1 matching). Go through the code and documentation to make sure you understand what each line does. Looking at the balance diagnostics, do you think the matching procedure was successful in balancing the covariates? 
+
+```{r, eval=T}
+# create an analysis dataset that only includes the covariates used
+# for matching and the treatment variable
+
+analysis_data <- data_nc |>
+    select(
+        Cont, D, Inc, PercentHispanic, PercentBlack,
+        density, per_collegegrads, p_score
+    )
+
+# Nearest neighbour matching (1:1, default)
+m_nn <- matchit(
+    D ~ Inc + PercentHispanic + PercentBlack +
+        density + per_collegegrads,
+    data = analysis_data,
+    method = "nearest",
+    ratio = 1,
+    distance = analysis_data$p_score,
+    estimand = "ATT"
+)
+
+# Check balance
+summary(m_nn, un = T)
+plot(summary(m_nn, un = T))
+
+# check specs
+print(m_nn)
+
+# Extract matched data
+matched_data <- match.data(m_nn)
+
+# Estimate the ATT using linear regression on the matched data
+lm_robust(Cont ~ D, data = matched_data) |>
+    modelsummary(
+        stars = T,
+        gof_map = c("nobs", "r.squared"),
+        output = "markdown"
+    )
+```
+
+The matching procedure was not successful in achieving good covariate balance between treated and control groups. This is evident from the standardized mean differences, which remain large after matching and, in some cases, increased compared to the unmatched data.
+
+## Reproduce the steps above but this time compute the distance matrix using Mahalanobis distance and allow for replacement. Allow up to four control units to be matched to one treated unit. Do we obtain better balance with this approach?
+
+```{r}
+m_mah <- matchit(
+    D ~ Inc + PercentHispanic + PercentBlack +
+        density + per_collegegrads,
+    data = analysis_data,
+    method = "nearest",
+    distance = "mahalanobis",
+    replace = TRUE,
+    ratio = 4,
+    estimand = "ATT"
+)
+
+summary(m_mah, un = TRUE)
+plot(summary(m_mah, un = TRUE))
+print(m_mah)
+
+matched_data_mah <- match.data(m_mah)
+
+lm_robust(Cont ~ D, data = matched_data_mah) |>
+    modelsummary(
+        stars = TRUE,
+        gof_map = c("nobs", "r.squared"),
+        output = "markdown"
+    )
+
+```
+
+Mahalanobis matching with replacement improves covariate balance compared to the previous nearest neighbour matching without replacement. After matching, the standardized mean differences (SMDs) for all covariates fall below the commonly accepted threshold of 0.1, indicating much better balance between treated and control units.
+
+## Estimate the ATT using linear regression on the matched data obtained from Mahalanobis distance matching with replacement. How does this estimate compare to the one obtained with nearest neighbour matching without replacement?
+
+```{r}
+lm_robust(Cont ~ D, data = matched_data_mah) |>
+    modelsummary(
+        stars = TRUE,
+        gof_map = c("nobs", "r.squared"),
+        output = "markdown"
+    )
+
+```
+
+The positive and statistically significant estimate obtained using nearest neighbor matching disappears once proper balance is achieved, suggesting that the earlier result was driven by imbalance rather than a true causal effect.
+
+## Estimate the ATT using the Lin-Estimator. You may use the `lm_lin()` function from the `estimatr` package or write your own code to implement the Lin-Estimator. Use the original unmatched data and control for the same covariates used for matching. How does the estimate differ from the one obtained with matching? What could explain the difference in estimates?
+
+```{r}
+lin_model <- lm_lin(
+  Cont ~ D,
+  covariates = ~ Inc + PercentHispanic + PercentBlack +
+                density + per_collegegrads,
+  data = analysis_data
+)
+
+modelsummary(
+  lin_model,
+  stars = TRUE,
+  gof_map = c("nobs", "r.squared"),
+  output = "markdown"
+)
+
+```
+
+The Lin estimator is negative, large, and statistically significant. This differs substantially from the estimate obtained using nearest neighbour matching without replacement and the estimate obtained using Mahalanobis matching. Because the Lin estimator maps across the full dataset, its estimate is different than the Mahalanobis estimator, which estricts comparisons to treated and control units with similar covariate values. A higher degree of extrapolation from the Lin method produces this different statistic.
+
+---
+:::{.callout-note}
+## Feedback
+
+*Feedback to the problem set will be provided here.*
+
+
+:::

@@ -1,0 +1,382 @@
+---
+title: "Problem Set 1: Potential Outcomes and Randomised Experiments"
+subtitle: "MY457 | WT 2026 | Week 2"
+number-sections: true
+format:
+  pdf:
+    toc: false
+    include-in-header:
+      text: |
+        \setkomafont{disposition}{\normalfont\bfseries}
+        \setkomafont{section}{\normalfont\Large\bfseries}
+        \setkomafont{subsection}{\normalfont\normalsize}
+---
+
+```{r setup, include = FALSE}
+# this chunk contains code that sets global options for the entire .qmd.
+knitr::opts_chunk$set(warning = FALSE, message = TRUE, linewidth = 60)
+
+# you can include your libraries here:
+library(tidyverse)
+library(here)
+library(knitr)
+library(estimatr)
+library(broom)
+library(modelsummary)
+library(haven)
+```
+
+Add your answers to this .qmd file by replacing the dedicated placeholder text. When you are finished, render the .qmd file as a .pdf and make sure you push your work to GitHub.
+
+# Concepts
+
+This question reviews some of the concepts covered in class. Mathematical notation is often necessary to be specific about the assumptions and quantities of interest. If you want to support your explanations with mathematical notation, \href{https://rmd4sci.njtierney.com/math}{this page} provides a tutorial on including mathematical notation in Quarto.
+
+Consider a simple study of the effect of a treatment $D_i \in \{0,1\}$ on $Y_i$ for all units $i \in \{1,2,3,\dots,N\}$.
+
+## In the table below, fill in the missing values. For one unit, this is not possible. Which one is it, and why?
+
+| $i$ | $D_i$ | $Y_{0i}$ | $Y_{1i}$ | $Y_i$ |
+|-----|-------|----------|----------|-------|
+| 1   | 0     | 5        | 10       | 5     |
+| 2   | 1     | 3        | 8        | **?** |
+| 3   | **?** | 4        | 4        | 4     |
+| 4   | 0     | **?**    | 12       | 7     |
+| 5   | **?** | 4        | 9        | 9     |
+
+In order from top down: 8, unknown, 7, 1
+
+It is not possible to know the value of the cell at ($i$ = 3, $D_i$) because both of the values for the potential outcomes at $i$ = 3 are equal to 4. It is not possible for us to know without more information which treatment group this value was assigned to.
+
+## What is the individual treatment effect $\tau_i$ for unit $i=1$ in the table above? Explain how you arrived at your answer.
+
+## $\tau_i$ = $Y_{1i}$ - $Y_{0i}$ = 10 - 5 = 5
+
+The treatment effect is the difference in the potential outcomes for an individual $i$. It is calculated by subtracting the baseline value of $i$ before treatment from the change $i$ has undergone (after treatment) to see the total change, or treatment effect.
+
+## Given the table of potential outcomes below, calculate the Average Treatment Effect (ATE), the Average Treatment Effect on the Treated (ATT), and the Average Treatment Effect on the Untreated (ATU).
+
+| $D_i$ | $Y_{0i}$ | $Y_{1i}$ |
+|-------|----------|----------|
+| 0     | 6        | 10       |
+| 0     | 4        | 8        |
+| 1     | 5        | 12       |
+| 1     | 7        | 14       |
+
+$ATE = E[Y_{1i} - Y_{0i}]$
+
+= $\frac{(10-6)+(8-4)+(12-5)+(14-7)}{4}$
+
+= $\frac{4+4+7+7}{4}=\frac{22}{4}=5.5$
+
+$ATT = E[Y_{1i} - Y_{0i}\mid D_i=1]$
+
+$=\frac{(12-5)+(14-7)}{2}$
+
+$=\frac{7+7}{2} =\frac{14}{2}=7$
+
+$ATU = E[Y_{1i} - Y_{0i}\mid D_i=0]$
+
+$=\frac{(10-6)+(8-4)}{2}$
+
+$=\frac{4+4}{2} =\frac{8}{2}=4$
+
+## Compare the following two quantities: $E[Y_i \mid D_i=1] - E[Y_i \mid D_i=0]$ and $E[Y_{1i} - Y_{0i}]$. What does each represent, and under what conditions are they equal?
+
+The first equation represents the naive difference in means, or the difference in average observed outcomes between the treated and control groups. The second is the Average Treatment Effect (ATE), which is unobservable and represents how the outcomes would change if all the observations were in the treatment group or all were in the control group. These are equal if and only if selection bias is equal to 0.
+
+# Simulation
+
+In this section, we will use simulated data to test some of our intuitions about randomised experiments. The advantage of using a simulated dataset is that we have explicit control over the data generating process, and know the 'true' answer to any question we pose.
+
+We will first simulate a dataset that corresponds to the table from above:
+
+```{r}
+dat1 <- tibble(
+    D = c(0, 0, 1, 1),
+    Y0 = c(6, 4, 5, 7),
+    Y1 = c(10, 8, 12, 14),
+    Y = Y0 * (1 - D) + Y1 * D
+)
+```
+
+## Using the simulated dataset above, calculate the difference-in-means and compare it to the true ATE. Are they equal? Why or why not?
+
+Difference in Means = $\bar{Y_{1}} - \bar{Y_{0}}$
+$=\frac{12+14}{2} - \frac{6+4}{2}=13-5=8$
+
+From the previous problems, we know that the true $ATE = 5.5$, so no, these measurements are not equal. This is because the treatement assignment does not appear to be random. In other words, the treated units are those with higher potential outcomes under treatment and control. This violates the independence condition.
+
+## Explain what the simulation code below does. Given the data generating process, why can't we use the naive difference-in-means estimator to recover the true ATE? How would you modify the data generating process to ensure that the naive difference-in-means estimator can be used to recover the true ATE?
+
+```{r}
+n <- 5000
+tau <- 5
+
+# always set a seed for reproducibility
+set.seed(2026)
+dat2 <- tibble(
+    Y0 = rnorm(n, mean = 50, sd = 10),
+    Y1 = Y0 + tau,
+    D = rbinom(n, size = 1, prob = 0.01 * Y0),
+    Y = Y0 * (1 - D) + Y1 * D
+)
+```
+
+This code simulates a population of 5000 units with a specific potential outcomes framework. $Y_{0}$ is represented by a normal distirbution with mean of 50 and standard deviation of 10, while $D$ is represented by a Bernoulli distribution where units with a higher $Y_{0}$ are more likely to be treated. The treatement is a constant additive effect of 5 for every unit.
+
+We cannot use the naive difference-in-means estimator to recover the true ATE because treated units have systematically higher potential outcomes than those of the control group. This creates selection bias. If we did want to use the difference-in-means estimator, the assignment would need to be independent of potential outcomes. (In this case, prob = 0.5.)
+
+## Create a plot that visualises the distribution of the potential outcomes under treatment ($Y_{1i}$) by treatment status $D_i$ using the simulated dataset `dat2` from above. What do you observe?
+
+``` {r}
+dat2 %>% 
+  ggplot(aes(x = Y1, fill = factor(D))) +
+  geom_density(alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Potential Outcomes Under Treatment by Treatment Status", 
+    x = expression(Y[1]), 
+    fill = "D")
+
+```
+
+The findings here are unsurprising. The distribution for $Y_{1}$ for treated units ($D = 1$) is shifted to the right compared to untreated units ($D = 0$). This occurs even though $Y_{1}$ is a potential outcome because treatement assignment depends on $Y_{0}$. This indicates selection bias and shows why the naive difference-in-means estimator cannot be used.
+
+## Next, create a new dataframe `dat3` which includes the potential outcomes from `dat2` and a treatment indicator `D` that randomly assigns treatment with probability 0.5. Recalculate the observed outcome `Y` based on this new treatment assignment. Create the same plot as above using the new treatment assignment vector. What do you observe now?
+
+``` {r}
+set.seed(2026)
+
+dat3 <- dat2 %>%
+  mutate(
+    D = rbinom(n(), size = 1, prob = 0.5),
+    Y = Y0 * (1 - D) + Y1 * D
+  )
+
+dat3 %>% 
+  ggplot(aes(x = Y1, fill = factor(D))) +
+  geom_density(alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Potential Outcomes Under Treatment by Treatment Status", 
+    x = expression(Y[1]), 
+    y = "Density", fill = "D")
+
+```
+
+The graph now shows the distributions $Y_{1}$ for each treatment status overlapping almost perfectly; there is no longer a systematic shift between the two because the independence assumption is now validated and selection bias has been removed.
+
+## Using the data in `dat3`, estimate the ATE using both linear regression and the difference-in-means estimator. Do the estimates produced by these estimators differ? How well do they recover the estimand?
+
+```{r}
+# Difference-in-means
+mean(dat3$Y[dat3$D==1]) - mean(dat3$Y[dat3$D==0])
+
+# Regression:
+lm(Y ~ D, dat3)
+lm_robust(Y ~ D, dat3)
+
+```
+
+All of these methods recover a value of approximately 4.618. They do not really differ. They recover the estimand (which should be 5) moderately well, as it is within 1 standard deviation.
+
+## For both the `dat2` and `dat3` datasets, calculate the magnitude of selection bias and ATE based on the potential outcomes and estimate the ATE using the difference-in-means estimator (based on the treatment indicator and the observed outcomes). How are the three quantities related? How does the magnitude of selection bias differ between the two datasets, and why?
+
+```{r}
+dat2_calcs <- tibble(
+    ATE_true = mean(dat2$Y1 - dat2$Y0),
+    selection_bias = mean(dat2$Y0[dat2$D == 1]) - mean(dat2$Y0[dat2$D == 0]),
+    diff_in_means = mean(dat2$Y[dat2$D == 1]) - mean(dat2$Y[dat2$D == 0])
+) %>%
+    mutate(
+        ATE_plus_bias = ATE_true + selection_bias
+    )
+
+dat3_calcs <- tibble(
+    ATE_true = mean(dat3$Y1 - dat3$Y0),
+    selection_bias = mean(dat3$Y0[dat3$D == 1]) - mean(dat3$Y0[dat3$D == 0]),
+    diff_in_means = mean(dat3$Y[dat3$D == 1]) - mean(dat3$Y[dat3$D == 0])
+) %>%
+    mutate(
+        ATE_plus_bias = ATE_true + selection_bias
+    )
+
+dat2_calcs
+dat3_calcs
+
+```
+
+In dat2, selection bias is large and positive, causing the difference-in-means estimator to overstate the true ATE. In dat3, random assignment and the change in probability eliminates selection bias, so the difference-in-means recovers a much better measure of the ATE.
+
+## The code below repeatedly simulates a dataset and estimates the ATE and selection bias under random treatment assignment. In a new code chunk, modify the data generating process to introduce selection bias. Run 1000 simulations with your modified process and visualise the distributions of the estimated ATEs and selection biases appropriately. Interpret your findings.
+
+```{r, eval=F, echo=T}
+n_sims <- 1000
+n <- 500
+tau <- 2
+
+set.seed(2026)
+results <- tibble(
+    iter = numeric(n_sims),
+    ATE = numeric(n_sims),
+    Selection_Bias = numeric(n_sims)
+)
+
+# run simulations
+for (sim in 1:n_sims) {
+    dat <- tibble(
+        Y0 = rnorm(n),
+        Y1 = Y0 + tau,
+        D = rbinom(n, size = 1, prob = 0.5),
+        Y = Y0 * (1 - D) + Y1 * D
+    )
+
+    # Estimate ATE using difference-in-means
+    ate_estimate <- mean(dat$Y[dat$D == 1]) - mean(dat$Y[dat$D == 0])
+    results$ATE[sim] <- ate_estimate
+
+    # Calculate Selection Bias
+    selection_bias <- mean(dat$Y0[dat$D == 1]) - mean(dat$Y0[dat$D == 0])
+    results$Selection_Bias[sim] <- selection_bias
+
+    # add index
+    results$iter[sim] <- sim
+}
+```
+
+```{r}
+
+n_sims <- 1000
+n <- 500
+tau <- 2
+
+set.seed(2026)
+results <- tibble(
+    iter = numeric(n_sims),
+    ATE = numeric(n_sims),
+    Selection_Bias = numeric(n_sims)
+)
+
+# run simulations
+for (sim in 1:n_sims) {
+    dat <- tibble(
+        Y0 = rnorm(n),
+        Y1 = Y0 + tau,
+        D = rbinom(n, size = 1, prob = plogis(Y0)),
+        Y = Y0 * (1 - D) + Y1 * D
+    )
+
+    # Estimate ATE using difference-in-means
+    ate_estimate <- mean(dat$Y[dat$D == 1]) - mean(dat$Y[dat$D == 0])
+    results$ATE[sim] <- ate_estimate
+
+    # Calculate Selection Bias
+    selection_bias <- mean(dat$Y0[dat$D == 1]) - mean(dat$Y0[dat$D == 0])
+    results$Selection_Bias[sim] <- selection_bias
+
+    # add index
+    results$iter[sim] <- sim
+}
+
+results %>%
+  pivot_longer(c(ATE, Selection_Bias), names_to = "Quantity") %>%
+  ggplot(aes(x = value)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~ Quantity, scales = "free") +
+  theme_minimal() +
+  labs(
+    title = "Distributions of ATE Estimates and Selection Bias (Endogenous Treatment)", 
+    x = "Value", 
+    y = "Density")
+
+```
+
+In the wrapped graph of the distributions of the ATE Estimates and Selection Bias, it is clear that, because of the change I made to introduce selection bias, there are now issues. When plotted separately, it is clear that selection bias is systematically positive and does not average out. Because of this, it shifts the difference-in-means estimator away from the true ATE, which is now sytematically too large.
+
+# Replication
+
+In this section, you will be working with replication data from the study ["How to Elect More Women: Gender and Candidate Success in a Field Experiment"](https://doi.org/10.1111/ajps.12300). The authors designed a field experiment to test whether messages from party leaders can affect women's electoral success in intra party elections. The general belief is that there are two factors that explain why few women are elected. The first factor is related to the so-called 'supply side', with fewer female candidates vying for office. However, particularly among conservatives, voters' biases, also called the 'demand side', may play an important role. In the experiment messages are sent to leaders of precinct-level caucus meetings to see if tackling the demand side, the supply side, or both jointly, can increase the number of women who are elected.
+
+The messages were divided into 4 categories: 1) Placebo control, 2) Supply messages, 3) Demand messages, and 4) Supply+Demand messages. In the data, group 1 is the control group receiving a placebo message unrelated to the aforementioned factors. Groups 2 to 4 represent the different treatment groups with messages relating to both factors.
+
+## Read into `R` the replication data file `how_to_elect_more_women.dta`. Using `prop_sd_fem2014`, the proportion of state delegates elected from the precinct in 2014 who were women, create a new dummy variable called `sd_onefem2014` that takes a value of 1 if at least one woman was elected within the precinct in 2014, and 0 otherwise. This will be our outcome variable.
+
+``` {r}
+df <- read_dta("data/how_to_elect_more_women.dta")
+df$sd_onefem2014 <- ifelse(df$prop_sd_fem2014 > 0, 1, 0)
+```
+
+## Using the treatment indicator `condition`, create a balance table that compares the means of the pre-treatment variables `age2012` and `attendees2012` across the four treatment groups. Do you observe any significant imbalances? How could they be addressed in the analysis?
+
+```{r}
+balance_table <- df %>%
+    group_by(condition) %>%
+    summarize(
+        mean_age2012 = mean(age2012, na.rm = TRUE),
+        sd_age2012  = sd(age2012, na.rm = TRUE),
+        mean_attendees2012  = mean(attendees2012, na.rm = TRUE),
+        sd_attendees2012  = sd(attendees2012, na.rm = TRUE), 
+        n = n()
+    )
+
+balance_table
+
+summary(aov(age2012 ~ factor(condition), data = df))
+summary(aov(attendees2012 ~ factor(condition), data = df))
+
+```
+
+From the age2012 group, since the p-vaue os very large, we fait to reject the null hypothesis, meaning that age is the same across all treatment groups. There is no evidence of imbalance here.
+
+From the attendees2012 group, the p-value is below 0.05, so we reject the null hypothesis. This indicates a statistically significant imbalance in prior attendance across treatment conditions.
+
+Randomization appears to have successfully balanced age across treatment groups. However, there is evidence of imbalance in prior attendance, suggesting that some treatment segments contained participants with systematically different baseline levels of engagement.
+
+## Using `lm_robust()` from the `estimatr` package, estimate the Average Treatment Effect (ATE) of each treatment group compared to the control group on the outcome variable `sd_onefem2014`. Present your results in a table and interpret them.
+
+```{r}
+df$condition <- factor(df$condition)
+df$condition <- relevel(df$condition, ref = 1)
+
+ate_model <- lm_robust(
+  sd_onefem2014 ~ condition,
+  data = df
+)
+
+summary(ate_model)
+
+ate_table <- tidy(ate_model, conf.int = TRUE) |>
+  filter(term != "(Intercept)")
+
+ate_table
+
+```
+
+The estimated Average Treatment Effect of each treatment condition relative to the control group is on the probability that at least one woman was elected. In the control group, approximately 37.5% of precincts elected at least one woman.
+
+Condition 2: Increases probability by ~5.9 percentage points; Not statistically significant at 5%, but marginal at 10%
+
+Condition 3: Increases probability by ~5.7 percentage points; Also not significant at 5%, marginal at 10%
+
+Condition 4: Increases probability by ~7.8 percentage points; Statistically significant at the 5% level
+
+The value of R^2 is low, which is good. The F-value being marginally significant tells us that at least one treatment differs from the control. Overall, the results show that some treatments (mainly Condition 4) can meaningfully increase women's electoral representation.
+
+## BONUS: When using a categorical independent variable (like a treatment indicator), classical standard errors can be biased downwards due to heteroscedasticity. Above, we estimated HC2 heteroscedasticity robust standard errors to account for that. An alternative way to estimate inferential statistics without relying on asymptotic assumptions is randomisation inference. On a subset of the data that only includes the placebo and supply+demand conditions, test the sharp null hypothesis of no effect using randomisation inference with 10,000 permutations. Report the p-value and create a histogram of the simulated ATEs. You can assume that the treatment was assigned using complete random assignment.
+
+Hint:
+
+1.  Estimate the observed ATE in that subset.
+2.  Create a loop that repeats the following steps 10,000 times:
+    -   Shuffle the treatment assignment vector.
+    -   Estimate the ATE under the permuted treatment assignment and store it.
+3.  Calculate the two-tailed p-value as the share of permuted ATEs that are as extreme or more extreme than the observed ATE.
+
+*Delete this line and replace it with your answer.*
+
+------------------------------------------------------------------------
+
+::: callout-note
+## Feedback
+
+*Feedback to the problem set will be provided here.*
+:::

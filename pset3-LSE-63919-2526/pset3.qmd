@@ -1,0 +1,406 @@
+---
+title: "Problem Set 3: Instrumental Variables"
+subtitle: "MY457 | WT 2026 | Week 7"
+number-sections: true
+format:
+  pdf:
+    toc: false
+    include-in-header:
+      text: |
+        \setkomafont{disposition}{\normalfont\bfseries}
+        \setkomafont{section}{\normalfont\Large\bfseries}
+        \setkomafont{subsection}{\normalfont\normalsize}
+---
+
+
+```{r setup, include = FALSE}
+# this chunk contains code that sets global options for the entire .qmd.
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, linewidth = 60, echo = T)
+
+# you can include your libraries here:
+library(tidyverse)
+library(here)
+library(knitr)
+library(estimatr)
+library(broom)
+library(modelsummary)
+library(haven)
+library(ggdag)
+library(AER)
+library(ivDiag)
+library(fixest)
+```
+
+
+Add your answers to this .qmd file by replacing the dedicated placeholder text. When you are finished, render the .qmd file as a .pdf and make sure you push your work to GitHub.
+
+
+# Concepts
+
+## In the table below, fill in the missing values and **bold** the values you fill in. In one case, this is not possible. Which one is it and why? Note that $Y_{1i}$ and $Y_{0i}$ are the potential outcomes with respect to encouragement $Z$, so that $Y_i = Y_{Z_i, i}$. 
+
+
+| $i$ | $Z_i$ | $D_{0i}$ |  $D_{1i}$ | $D_i$| Compliance Type | $Y_{0i}$ | $Y_{1i}$ | $Y_i$ |
+|---|---|---|---|---|--------------|---|---|---|
+| 1 | 0 | **0** | **0** | **0**  | Never-taker  | 3 | 3 | **3**  |
+| 2 | 1 | 0 | 1 |  **1** | **Complier**     | 2 | 5 | **5**  |
+| 3 | 1 | 1 | 1 | **1**  | **Always-taker** | 4 | 4 | **4**  |
+| 4 | 0 | 1 | **1**  | **1**  |  **Defier** | 3 | 0 | 3 |
+| 5 | 0 | 1 | **1**  | 1 | **Always-taker** | **4**  |   | 4 |
+
+: Table of Potential Outcomes {#tbl-potential-outcomes}
+
+We cannot tell the value for $Y_{1i}$ of $i = 5$ because we do not observe $D_{1i}$ and nothing about the information given can concretely tell us whether this observation is an always-taker or a defier.
+
+## Write down the estimand for the ITT. Excluding the unit for which you can't fill in the missing values, calculate the ITT using the potential outcomes in @tbl-potential-outcomes.
+
+$ITT = E(Y_{i}|Z_{i}=1) - E(Y_{i}|Z_{i}=0)$
+$ITT = 4.5 - 3 = 1.5$
+
+## In this example, is the ITT equal to the ATE (where the ATE is defined with respect to treatment $D$)? Why or why not?
+
+No, the ITT is not equal to the ATE. Treatment does not perfectly follow assignment for all the units, meaning there is noncompliance bias. That means the itention (ITT) differs from what actually happened (ATE) in the experiment.
+
+## Beyond SUTVA, what must we assume to identify the LATE? From the data in @tbl-potential-outcomes, can you determine whether these assumptions hold? Why or why not?
+
+Beyond SUTVA, we need the Relevance, Ignorability, Exclusion, and Monotonicity assumptions to identify the LATE. The only one we can somewhat verify is the Relevance assumption; because $i=2$ is a Compiler, there is at east one unit for which Z shifts D. (However, this is very small data set.) All the other assumptions cannot be verified for various reasons.
+
+# Simulation
+
+## Explain the code below and relate it to an instrumental variables data generating process. Calculate the true ITT and ATE.
+
+```{r}
+set.seed(123)
+n_obs <- 1000
+
+data <- tibble(
+    U = rbinom(n_obs, 1, .75),
+    c_type = ifelse(U == 1,
+        sample(1:3, n_obs, prob = c(0.7, 0.1, 0.2), replace = T),
+        sample(1:3, n_obs, prob = c(0.35, 0.3, 0.35), replace = T)
+    ),
+    tau = case_match(c_type, 1 ~ 5000, 2 ~ 1000, 3 ~ 2500),
+    Z = rbinom(n_obs, 1, .5),
+    D = case_match(c_type, 1 ~ as.integer(Z == 1), 2 ~ 1L, 3 ~ 0L),
+    Y0 = rnorm(n_obs, mean = 50000, sd = 2500) + 25000 * U,
+    Y1 = Y0 + tau,
+    Y = ifelse(D == 1, Y1, Y0)
+)
+```
+
+This is a basic instrumental variables data-generating process.
+$U$: A binomial-distributed unobserved confounder
+C-type: Assigns a compliance type to the observations in the data (compiler, always-taker, never-taker, no defiers)
+$Z$: Instrument: Randomly assigned with $P=0.5$
+$D$: Treatment determined by C-type
+Y0: Normally-distributed baseline potential outcome
+Y1: Treated potential outcome, sum of Y0 and tau
+
+$ITT = P(compiler)*tau_{compiler}$
+$P(compiler) = P(U=1)*0.70+P(U=0)*0.35=0.75×0.70+0.25*0.35=0.525+0.0875=0.6125$
+$ITT = 0.6125*5000 = 3062.5$
+
+$ATE = P(compiler)*tau_{compiler}+P(AT)*tau_{AT}+P(NT)*tau_{NT}$
+$P(AT) = 0.75*0.10+0.25*0.30=0.075+0.075=0.15$
+$P(NT) = 0.75*0.20+0.25*0.35=0.15+0.0875=0.2375$
+$ATE = 0.6125*5000+0.15*1000+0.2375*2500=3806.25$
+
+The ITT < ATE because it is diluted by the large share of non-compliers (38.75%) for whom Z does nothing. 
+
+## Create a DAG that represents the data generating process in the code above. Include the variables $Z$, $C$ (for `c_type`), $D$, $Y$, and $U$. 
+
+```{r}
+dag1 <- dagify(
+  D ~ Z + C,
+  Y ~ D + C + U,
+  C ~ U,
+  exposure = "D",
+  outcome = "Y",
+  latent = "U",
+  coords = list(
+    x = c(Z = 1, C = 3, D = 3, Y = 5, U = 3),
+    y = c(Z = 2, C = 0, D = 2, Y = 2, U = 4)
+  )
+)
+
+ggdag1 <- ggdag(dag1) +
+    theme_dag()
+ggdag1
+
+```
+
+## Use OLS to estimate the difference-in-means with respect to treatment $D$. Is this an unbiased estimator for the ATE in this setting? Why or why not?
+
+```{r}
+ols_D <- lm(Y ~ D, data = data)
+summary(ols_D)
+```
+
+The OLS is not an unbiased estimator in this setting because of the confounding from U. For starters, the OLS gives an estimate of 1791.3, which is not anywhere close to the true ATE of 3806.25 and the LATE of 5000. U creates a backdoor path in the DAG, making D not randomly assigned. Instead, D is driven by C, which is in turn driven by the unobserved U. The OLS does not make use of the randomization from Z.
+
+## Now estimate the difference-in-means with respect to encouragement $Z$. Is this an unbiased estimator for any causal effect in this setting? Why or why not?
+
+```{r}
+itt_model <- lm(Y ~ Z, data = data)
+summary(itt_model)
+```
+
+This is a more unbiased estimator for Z than OLS. Because Z is randomly assigned, the difference-in-means with respect to Z is an unbiased estimator of the ITT as it removes confounding bias. The estimate of 2844.2 is much closer to the true ATE of 3806.25.
+
+## Estimate the LATE using the Wald estimator. 
+
+```{r}
+# First stage: effect of Z on D (ITT_D)
+first_stage <- mean(data$D[data$Z == 1]) - mean(data$D[data$Z == 0])
+
+# Reduced form: effect of Z on Y (ITT_Y)
+reduced_form <- mean(data$Y[data$Z == 1]) - mean(data$Y[data$Z == 0])
+
+# Wald estimator: LATE = reduced form / first stage
+wald_late <- reduced_form / first_stage
+
+cat("First stage  (ITT_D):", round(first_stage,  4), "\n")
+cat("Reduced form (ITT_Y):", round(reduced_form, 4), "\n")
+cat("Wald LATE:           ", round(wald_late,    4), "\n")
+cat("True LATE:            5000\n")
+```
+
+
+## Using the Two Stage Least Squares (2SLS) estimator, re-estimate the LATE. Do this both manually (using two `lm()` commands) and using the `AER::ivreg` command. How does your result compare to the previous result? Make sure to present the results of your second stage in a well-formatted table that includes standard errors. Interpret the results and potential differences between the two models.
+
+*Delete this line and replace it with your answer.*
+
+```{r}
+
+# Wald estimator (from previous question)
+itt     <- mean(data$Y[data$Z == 1]) - mean(data$Y[data$Z == 0])
+first_s <- mean(data$D[data$Z == 1]) - mean(data$D[data$Z == 0])
+wald    <- itt / first_s
+
+cat("Wald LATE estimate:", round(wald, 2), "\n")
+
+# Manual 2SLS
+
+# Stage 1: regress D on Z, extract fitted values
+stage1      <- lm(D ~ Z, data = data)
+data$D_hat  <- fitted(stage1)
+
+# Stage 2: regress Y on D_hat (predicted D from stage 1)
+stage2_manual <- lm(Y ~ D_hat, data = data)
+
+# 2SLS via AER::ivreg
+stage2_iv <- ivreg(Y ~ D | Z, data = data)
+
+# Presentation table
+modelsummary(
+  list(
+    "Manual 2SLS (Stage 2)"  = stage2_manual,
+    "AER ivreg (2SLS)"       = stage2_iv
+  ),
+  stars    = c("*" = 0.1, "**" = 0.05, "***" = 0.01),
+  gof_map  = c("nobs", "r.squared"),
+  coef_rename = c(
+    "(Intercept)" = "Intercept",
+    "D_hat"       = "D (fitted)",
+    "D"           = "D (instrumented)"
+  ),
+  notes = c(
+    "Standard errors in parentheses.",
+    "Manual 2SLS SEs are biased (residuals computed on D̂, not D).",
+    "AER ivreg SEs are correct."
+  ),
+  title = "2SLS Estimates of the LATE"
+)
+
+# Compare all three estimates 
+cat("\n--- Comparison of LATE Estimates ---\n")
+cat("True LATE (complier tau):    ", 5000, "\n")
+cat("Wald estimator:              ", round(wald, 2), "\n")
+cat("Manual 2SLS coefficient:     ", round(coef(stage2_manual)["D_hat"], 2), "\n")
+cat("AER ivreg coefficient:       ", round(coef(stage2_iv)["D"], 2), "\n")
+
+```
+
+All three methods give the same point estimate, which is close to but not exactly the true LATE of 5000. This is to be expected with the n size; a larger n might make this estimate converge to 5000. The standard errors show that the ivreg is a better estimator for D because it uses the original D when computing residuals, rather than using fitted values like in the lm() model.
+
+
+# Replication
+
+In this section, we will use real-world data to reinforce what we have learned. We will analyse the dataset employed in *[Foreign Aid, Human Rights and Democracy Promotion: Evidence from a Natural Experiment](https://onlinelibrary.wiley.com/doi/10.1111/ajps.12289)*. 
+
+Many countries, especially lower- and middle-income countries, are provided foreign aid with the intention that this will improve the living conditions of those in need. This foreign aid might have some spillover effects by encouraging the protection of human rights and entrenching democratic institutions. Does foreign aid improve human rights and democracy? 
+
+The authors use instrumental variables to study the effect of foreign aid, measured as overseas development assistance (`aid`) on the the CIRI Empowerment Index (`CIRI`). 
+
+## Explain in your own words the instrumental variable (IV) design that the authors use to answer the research question. What are the instrument, the treatment, and the outcome? 
+
+- Design Used: Instrumental Variables Estimation: Identifying the causal effect of foreign aid on democracy outcomes is not randomly assigned. (Ex: Donors tend to give more money to countries that are starting to pursue more democratic trajectories.) Therefore, receiving aid is correlated with unobserved characteristics at the country level that also affect outcomes. This is mitigated by using U.S. colony status as a instrument, as aid allocation is significantly higher for former colonies.
+- Instrument: A country's status as a former U.S. colony or territory
+- Treatment: The amount of overseas development assistance or aid a country receives
+- Outcome: CIRI Empowerment Index: Measures government respect for political freedoms and human rights ranging from 0 (no respect) to 14 (full respect)
+
+## Give one example for a potential exclusion restriction violation in this setting. How plausible do you think the exclusion restriction is in this case?
+
+An exclusion violation would occur if colonial status has any direct effect on human rights, or affects rights through some pathway other than receiving aid. For example, former U.S. colonies may have inherited American customs, legal systems, administrative pathways, or military structures. These institutional legacies could independently improve (or worsen) human rights protections, regardless of current aid flows. If so, there would be a direct arrow between the instrument and the outcome, violating the exclusion restriction.
+
+In this case, I would say the exclusion restriction is only somewhat satisfied, because there are several other examples beyond this one that violation the exlcusion assumption.
+
+## What would have to be true for the ignorability assumption to be violated in this setting? Do you think the ignorability assumption holds?
+
+The ignorability assumption means that assignment to the instrument is as good as random. In this setting, that would mean colony assignment would have to be "as-if" random; it would be violated if there is any unobserved variable that is correlated with both colony status and CIRI. There are a few cases in which this assumption does not appear to hold:
+
+- The U.S. did not colonize countries at random - it chose countries that were either close or economically or strategicall advantageous.
+- Countries that were colonised by the U.S. may have been on systematically different development paths before colonisation — either more or less institutionally developed — and these pre-colonial characteristics have persistent effects on modern governance and human rights that have nothing to do with current aid.
+- Former U.S. colonies are geographically clustered (Pacific islands, the Caribbean, Southeast Asia).
+
+Based on these exceptions (and more that I did not name), there is an ignorability problem. However, the authors do try to combat it by adding country fixed-effects, which is a meaningful decision that makes the study more credible than it would have been otherwise.
+
+
+## Read into `R` the replication data set (`foreign_aid.dta`) and assign it to an object called `aid_data`. Each row in the data is a country-year observation. Estimate the ITT on the CIRI Empowerment Index (`CIRI`), controlling for country and year fixed effects. Be sure to present your results neatly, showing only relevant statistics for `Colony` and not for all your fixed effects. What do you find? 
+
+```{r}
+aid_data <- read_dta("data/foreign_aid.dta")
+
+itt_model <- feols(CIRI ~ Colony | ccode + year,
+                   data = aid_data,
+                   cluster = ~ccode)
+
+modelsummary(
+  itt_model,
+  coef_map = c("Colony" = "Colony (Instrument)"),
+  stars    = c("*" = 0.1, "**" = 0.05, "***" = 0.01),
+  gof_map  = c("nobs", "r.squared"),
+  title    = "ITT Estimate: Effect of Colony Status on CIRI Empowerment Index",
+  notes    = "Standard errors clustered by country. Country and year fixed effects included."
+)
+
+```
+
+Former U.S. coloy status is associated with a 0.302 point increase in the CIRI Index. The estimate is significant, so we can reject the null hypothesis of no reduced-form relationship between colony status and human rights outcomes.
+
+## Test whether the instrument is relevant. Use the `eff_F()` function from the `ivDiag` package. Your model should instrument Aid (`aid`) with presidency status (`Colony`), include country and year fixed effects as controls, and cluster standard errors by country and year. As a rule of thumb, an F-statistic greater than 10 is often considered to indicate a relevant instrument [(Andrews, Stock, and Sun, 2019)](https://doi.org/10.1146/annurev-economics-080218-025643). What do you find? 
+
+```{r}
+aid_clean <- aid_data |>
+  mutate(ccode = factor(ccode),
+         year  = factor(year)) |>
+  select(CIRI, aid, Colony, ccode, year) |>
+  drop_na()
+
+f_test <- eff_F(
+  data     = aid_clean,
+  Y        = "CIRI",
+  D        = "aid",
+  Z        = "Colony",
+  controls = c("ccode", "year"),
+  cl       = c("ccode", "year")
+)
+
+print(f_test)
+```
+
+Because the F-test statistic was below the threshold of 10, we can say that colony status is a weak instrument for calculating aid distribution. This means that the estimates and standard errors from the paper may be biased/unreliable. 
+
+## Estimate the first stage and the second stage, again controlling for two-way fixed effects. Again, use `lm()` and present the results neatly. What do you find? 
+
+```{r}
+# first stage
+first_stage <- lm(aid ~ Colony + factor(ccode) + factor(year),
+                  data = aid_data)
+
+# extract fitted values for second stage
+aid_data$aid_hat <- fitted(first_stage)
+
+# second stage
+second_stage <- lm(CIRI ~ aid_hat + factor(ccode) + factor(year),
+                   data = aid_data)
+
+# results
+modelsummary(
+  list("First Stage (Aid)" = first_stage,
+       "Second Stage (CIRI)" = second_stage),
+  coef_map = c(
+    "Colony"  = "Colony (Instrument)",
+    "aid_hat" = "Aid, fitted (Treatment)"
+  ),
+  stars   = c("*" = 0.1, "**" = 0.05, "***" = 0.01),
+  gof_map = c("nobs", "r.squared"),
+  title   = "2SLS: First and Second Stage with Two-Way Fixed Effects",
+  notes   = c(
+    "Country and year fixed effects included but not shown.",
+    "WARNING: Second stage SEs are biased downward — use ivreg for correct inference."
+  )
+)
+
+```
+
+The coefficient of 0.160 means that former U.S. colony status increases aid receipts by 0.160 units within countries over time, but the magnitude is small, which reflects that F-test statistic from earlier. 
+
+In the second stage, the coefficient of 1.885 is the LATE estimate. This is a substantively large effect given that the CIRI index only runs from 0 to 10.
+
+Because the first stage is small (0.160), the LATE is much larger than the ITT (0.302). Intuitively, colony status only shifts aid by a modest amount, so to explain the effect on CIRI, the effect of aid itself must be large.
+
+## Using the `AER` package, use the `ivreg` function and estimate the LATE. Interpret the LATE substantively, are your results the same as above? Why?
+
+```{r}
+iv_model <- ivreg(CIRI ~ aid + factor(ccode) + factor(year) | 
+                  Colony + factor(ccode) + factor(year),
+                  data = aid_data)
+
+modelsummary(
+  list("2SLS LATE (ivreg)" = iv_model),
+  coef_map = c("aid" = "Aid (Instrumented)"),
+  stars    = c("*" = 0.1, "**" = 0.05, "***" = 0.01),
+  gof_map  = c("nobs", "r.squared"),
+  title    = "IV Estimate of LATE: Effect of Aid on CIRI Empowerment Index",
+  notes    = c(
+    "Instrument: Colony status (l2CPcol2).",
+    "Country and year fixed effects included but not shown.",
+    "Standard errors are heteroskedasticity-robust."
+  )
+)
+```
+
+The point estimate of 1.885 is identical to the manual 2SLS result, which is to be expected since the mathematical process of calcualting them is the same. The standard error increased from 0.797 to 1.096 which lost significance. This shows that the manual second stage understated uncertainty by computing residuals against aid(hat) rather than actual aid, making the estimate look more precise.
+
+## Estimate the LATE using the plug-in estimator. What do you find? Are your results different from before? Why?
+
+```{r}
+# ITT
+itt <- feols(CIRI ~ Colony | ccode + year,
+             data    = aid_data,
+             cluster = ~ccode)
+
+# first stage
+fs <- feols(aid ~ Colony | ccode + year,
+            data    = aid_data,
+            cluster = ~ccode)
+
+# extract coefficients
+itt_coef <- coef(itt)[["Colony"]]
+fs_coef  <- coef(fs)[["Colony"]]
+
+# plug-in LATE
+late_plugin <- itt_coef / fs_coef
+
+cat("──────────────────────────────────────\n")
+cat("ITT coefficient:        ", round(itt_coef,   4), "\n")
+cat("First stage coefficient:", round(fs_coef,    4), "\n")
+cat("Plug-in LATE:           ", round(late_plugin, 4), "\n")
+cat("ivreg LATE:             ", 1.885,                "\n")
+cat("──────────────────────────────────────\n")
+
+```
+
+The plug-in estimator is equivalent here too (as it should be). The Wald formula shows that because the instrument only weakly shifts aid, we must "scale" the effect in the second stage to recover the effect of aid, which is why the LATE is so much larger than the ITT.
+
+---
+
+
+:::{.callout-note}
+## Feedback
+
+*Feedback to the problem set will be provided here.*
+
+
+:::
